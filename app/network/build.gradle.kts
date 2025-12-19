@@ -1,4 +1,4 @@
-plugins {
+    plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
 }
@@ -8,8 +8,6 @@ dependencies {
     implementation("io.ktor:ktor-client-cio:2.3.11")
     implementation("io.ktor:ktor-client-content-negotiation:2.3.11")
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.11")
-
-    implementation("org.kohsuke:github-api:1.321")
 
     // Test dependencies
     testImplementation("io.ktor:ktor-client-mock:2.3.11")

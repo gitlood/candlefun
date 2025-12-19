@@ -6,18 +6,22 @@ import com.example.historicaldata.util.CandleDataOrchestrator
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.transaction
-import java.util.Properties
 
 /**
  * The main entry point for running the historical data update process independently.
  */
 fun main() {
-    try {
-        runHistoricalDataUpdate()
-    } catch (e: Exception) {
-        println("An unexpected error occurred:")
-        e.printStackTrace()
-        // Do not rethrow in main() to allow clean exit for logging
+    while (true) {
+        try {
+            runHistoricalDataUpdate()
+        } catch (e: Exception) {
+            println("An unexpected error occurred:")
+            e.printStackTrace()
+            // Do not rethrow in main() to allow clean exit for logging
+        }
+        
+        println("Waiting 1 minute for next update...")
+        Thread.sleep(60_000)
     }
 }
 
@@ -28,20 +32,11 @@ fun main() {
 fun runHistoricalDataUpdate() {
     println("=== Historical Data Task Started ===")
 
-    val properties = Properties()
-    val apiKey = properties.getProperty("BINANCE_KEY")
-
-    if (apiKey == null) {
-        println("BINANCE_KEY not found in local.properties. Skipping API calls that require it.")
-    } else {
-        println("BINANCE_KEY found.")
-    }
-
     // 1. Initialize dependencies
     val binanceApiService = BinanceApiService.create()
     val candleRepository: CandleRepository = CandleRepositoryImpl()
     // If apiKey is missing, you might want to handle it inside CandleDataOrchestrator or pass a dummy/empty one if allowed
-    val orchestrator = CandleDataOrchestrator(binanceApiService, candleRepository, apiKey ?: "")
+    val orchestrator = CandleDataOrchestrator(binanceApiService, candleRepository)
 
     // 2. Connect to the database and create tables
     Database.connect("jdbc:sqlite:binance.db", "org.sqlite.JDBC")

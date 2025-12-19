@@ -8,7 +8,7 @@ interface BinanceApiService {
         symbol: String,
         interval: String = "1m",
         limit: Int = 1000,
-        apiKey: String,
+       // apiKey: String,
         startTime: Long? = null,
         endTime: Long? = null
     ): List<KlineResponse>

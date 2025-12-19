@@ -10,7 +10,6 @@ import kotlin.math.min
 class CandleDataOrchestrator(
     private val binanceApiService: BinanceApiService,
     private val candleRepository: CandleRepository,
-    private val apiKey: String
 ) {
 
     fun updateCandles() = runBlocking {
@@ -47,7 +46,7 @@ class CandleDataOrchestrator(
             val klines = binanceApiService.getKlines(
                 symbol = BINANCE_SYMBOL,
                 limit = candlesPerRequest,
-                apiKey = apiKey,
+              //  apiKey = apiKey,
                 startTime = cursor,
                 endTime = endTime
             )
@@ -77,7 +76,7 @@ class CandleDataOrchestrator(
             println("Fetching latest candles since last update...")
             val klines = binanceApiService.getKlines(
                 symbol = BINANCE_SYMBOL,
-                apiKey = apiKey,
+             //   apiKey = apiKey,
                 startTime = lastOpenTime
             )
 

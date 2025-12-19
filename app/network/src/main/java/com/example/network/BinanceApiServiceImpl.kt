@@ -25,7 +25,7 @@ internal class BinanceApiServiceImpl(
         symbol: String,
         interval: String,
         limit: Int,
-        apiKey: String,
+     //   apiKey: String,
         startTime: Long?,
         endTime: Long?
     ): List<KlineResponse> {

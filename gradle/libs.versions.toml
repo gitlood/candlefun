@@ -1,9 +1,11 @@
 [versions]
-agp = "8.13.2"
 kotlin = "2.0.21"
+json = "2.15.+"
+
+[libraries]
+json = { group = "com.fasterxml.jackson.module", name="jackson-module-kotlin", version.ref = "json" }
 
 [plugins]
-android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+
