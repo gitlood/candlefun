@@ -4,8 +4,8 @@ json = "2.15.+"
 
 [libraries]
 json = { group = "com.fasterxml.jackson.module", name="jackson-module-kotlin", version.ref = "json" }
+json-jsr310 = { group = "com.fasterxml.jackson.datatype", name="jackson-datatype-jsr310", version.ref = "json" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
-

@@ -109,7 +109,8 @@ fun main() {
 
     // 2. Serialize to JSON
     val mapper = jacksonObjectMapper()
-        .enable(SerializationFeature.INDENT_OUTPUT) // Make it readable
+        .findAndRegisterModules() // <--- Added this to fix JSR310 error
+        .enable(SerializationFeature.INDENT_OUTPUT)
 
     val outputFile = File(ACTIVE_BOTS_FILE_NAME)
     mapper.writeValue(outputFile, botSpecs)

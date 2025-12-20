@@ -15,4 +15,5 @@ dependencies {
     implementation(project(":app:platformutil"))
     implementation(project(":app:historicaldata"))
     implementation(libs.json)
+    implementation(libs.json.jsr310)
 }

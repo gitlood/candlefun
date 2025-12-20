@@ -1,12 +1,15 @@
 package com.example.tradebot
 
 import com.example.platformutil.ACTIVE_BOTS_FILE_NAME
+import com.example.platformutil.model.BotSpec
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import java.io.File
 
 fun readBotSpecs(): List<BotSpec> {
     val mapper = jacksonObjectMapper()
+    mapper.registerModule(JavaTimeModule())
     val jsonFile = File(ACTIVE_BOTS_FILE_NAME)
 
     return if (jsonFile.exists()) {
@@ -28,15 +31,15 @@ fun printBotRoster(bots: List<BotSpec>) {
         return
     }
 
-    val border = "═".repeat(110)
+    val border = "═".repeat(160)
     println("\n$border")
     println(" ACTIVE BOT ROSTER (Count: ${bots.size})")
     println(border)
     // Table Header
-    println("%-20s | %-30s | %-8s | %-8s | %-8s | %-8s".format(
+    println("%-85s | %-30s | %-8s | %-8s | %-8s | %-8s".format(
         "Name", "Patterns", "TP%", "SL%", "Look(m)", "Vol-Z"
     ))
-    println("-".repeat(110))
+    println("-".repeat(160))
 
     bots.forEach { bot ->
         // Format patterns as a comma-separated string if there are multiple
@@ -44,8 +47,8 @@ fun printBotRoster(bots: List<BotSpec>) {
             if (it.length > 30) it.take(27) + "..." else it
         }
 
-        println("%-20s | %-30s | %-8.2f%% | %-8.2f%% | %-8d | %-8.2f".format(
-            bot.name.take(20),
+        println("%-85s | %-30s | %-8.2f%% | %-8.2f%% | %-8d | %-8.2f".format(
+            bot.name.take(85),
             patternsDisplay,
             bot.cfg.backtest.takeProfit * 100,
             bot.cfg.backtest.stopLoss * 100,

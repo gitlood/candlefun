@@ -15,8 +15,8 @@ import javax.crypto.spec.SecretKeySpec
 
 internal class BinanceTestNetApiServiceImpl(
     private val client: HttpClient = com.example.network.client.client,
-    private val apiKey: String = "BINANCE_TEST_KEY", // Should be replaced by injection or properties
-    private val secretKey: String = "BINANCE_TEST_SECRET" // Should be replaced by injection or properties
+    private val apiKey: String,
+    private val secretKey: String
 ) : BinanceTestNetApiService {
 
     private val baseUrl = "https://testnet.binance.vision/api/v3"
