@@ -1,6 +1,8 @@
 package com.example.algo
 
 import com.example.platformutil.AlgoConfig
+import com.example.platformutil.BacktestConfig
+import com.example.platformutil.SignalConfig
 
 object AlgoConfigSweeps {
 
@@ -17,61 +19,48 @@ object AlgoConfigSweeps {
 
         /**
          * Multipliers used when tieProfitGroupThresholdsToTp = true.
-         * Example: tp=0.02 -> [0.04, 0.03, 0.02] after sort desc.
+         * Example: tp=0.006 -> [0.012, 0.009, 0.006] after sort desc.
          */
         val profitGroupThresholdMultipliers: DoubleArray = doubleArrayOf(2.0, 1.5, 1.0),
 
         /**
          * Simple horizon sanity: bigger TP needs more minutes.
-         * You can tune this table anytime.
          */
         val minHorizonByTp: List<Pair<Double, Int>> = listOf(
-            0.02 to 30,
-            0.03 to 60,
-            0.05 to 120,
+            0.004 to 20,
+            0.005 to 30,
+            0.006 to 40,
         ),
-    ) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-
-            other as SweepConstraints
-
-            if (requireTpGreaterThanSl != other.requireTpGreaterThanSl) return false
-            if (minRiskReward != other.minRiskReward) return false
-            if (maxRiskReward != other.maxRiskReward) return false
-            if (tieProfitGroupThresholdsToTp != other.tieProfitGroupThresholdsToTp) return false
-            if (!profitGroupThresholdMultipliers.contentEquals(other.profitGroupThresholdMultipliers)) return false
-            if (minHorizonByTp != other.minHorizonByTp) return false
-
-            return true
-        }
-
-        override fun hashCode(): Int {
-            var result = requireTpGreaterThanSl.hashCode()
-            result = 31 * result + minRiskReward.hashCode()
-            result = 31 * result + maxRiskReward.hashCode()
-            result = 31 * result + tieProfitGroupThresholdsToTp.hashCode()
-            result = 31 * result + profitGroupThresholdMultipliers.contentHashCode()
-            result = 31 * result + minHorizonByTp.hashCode()
-            return result
-        }
-    }
+    )
 
     fun grid(
-        base: AlgoConfig = AlgoConfig(),
-        takeProfits: List<Double> = listOf(0.02, 0.03, 0.05),
-        stopLosses: List<Double> = listOf(0.01, 0.015, 0.02),
-        horizonsMinutes: List<Int> = listOf(30, 60, 120),
-        maxDrawdowns: List<Double> = listOf(0.10, 0.20, 0.30),
-        localLowLookbacks: List<Int> = listOf(0, 5, 10),
-        requireContinuous: List<Boolean> = listOf(false),
+        base: AlgoConfig = AlgoConfig(
+            backtest = BacktestConfig(
+                intervalMillis = 5 * 60_000L, // 5-minute candles
+                lookbackMinutes = 60,
+                horizonMinutes = 40 // base, overwritten by sweep
+            )
+        ),
+
+        // Backtest knobs
+        takeProfits: List<Double> = listOf(0.004, 0.005, 0.006),
+        stopLosses: List<Double> = listOf(0.002, 0.0025, 0.003),
+        horizonsMinutes: List<Int> = listOf(20, 30, 40, 50),
+        maxDrawdowns: List<Double> = listOf(0.02, 0.03, 0.04, 0.05),
+        localLowLookbacks: List<Int> = listOf(0, 1, 2, 3),
+        requireContinuous: List<Boolean> = listOf(true),
         dedupeOverlapping: List<Boolean> = listOf(true),
-        constraints: SweepConstraints = SweepConstraints(),
+
+        // RuleGate knobs (THIS is how you get “trade a day”)
+        ret30mMins: List<Double> = listOf(-0.02, -0.01, -0.005),
+        volumeZMins: List<Double> = listOf(-1.0, -0.5, 0.0),
+        contractionMaxes: List<Double> = listOf(1.05, 1.10, 1.20),
+        trendSlopeMins: List<Double> = listOf(0.0),
+
+        constraints: SweepConstraints = SweepConstraints()
     ): Sequence<AlgoConfig> = sequence {
 
         fun minHorizonFor(tp: Double): Int {
-            // pick the largest rule that matches (so tp=0.05 -> 120)
             var m = 0
             for ((tpCutoff, minHz) in constraints.minHorizonByTp) {
                 if (tp >= tpCutoff) m = maxOf(m, minHz)
@@ -102,30 +91,40 @@ object AlgoConfigSweeps {
                     for (dd in maxDrawdowns)
                         for (ll in localLowLookbacks)
                             for (rc in requireContinuous)
-                                for (dedupe in dedupeOverlapping) {
+                                for (dedupe in dedupeOverlapping)
+                                    for (r30 in ret30mMins)
+                                        for (vz in volumeZMins)
+                                            for (cx in contractionMaxes)
+                                                for (slope in trendSlopeMins) {
 
-                                    if (!isSane(tp, sl, hz)) continue
+                                                    if (!isSane(tp, sl, hz)) continue
 
-                                    val pgThresholds =
-                                        if (constraints.tieProfitGroupThresholdsToTp) thresholdsFromTp(tp)
-                                        else base.profitGroup.thresholds
+                                                    val pgThresholds =
+                                                        if (constraints.tieProfitGroupThresholdsToTp) thresholdsFromTp(tp)
+                                                        else base.profitGroup.thresholds
 
-                                    yield(
-                                        base.copy(
-                                            backtest = base.backtest.copy(
-                                                takeProfit = tp,
-                                                stopLoss = sl,
-                                                horizonMinutes = hz,
-                                            ),
-                                            profitGroup = base.profitGroup.copy(
-                                                thresholds = pgThresholds,
-                                                maxDrawdownAllowed = dd,
-                                                localLowLookbackMinutes = ll,
-                                                requireContinuous = rc,
-                                                dedupeOverlapping = dedupe,
-                                            )
-                                        )
-                                    )
-                                }
+                                                    yield(
+                                                        base.copy(
+                                                            backtest = base.backtest.copy(
+                                                                takeProfit = tp,
+                                                                stopLoss = sl,
+                                                                horizonMinutes = hz,
+                                                            ),
+                                                            profitGroup = base.profitGroup.copy(
+                                                                thresholds = pgThresholds,
+                                                                maxDrawdownAllowed = dd,
+                                                                localLowLookbackMinutes = ll,
+                                                                requireContinuous = rc,
+                                                                dedupeOverlapping = dedupe,
+                                                            ),
+                                                            signal = SignalConfig(
+                                                                ret30mMin = r30,
+                                                                volumeZMin = vz,
+                                                                contractionMax = cx,
+                                                                trendSlopeMin = slope
+                                                            )
+                                                        )
+                                                    )
+                                                }
     }
 }

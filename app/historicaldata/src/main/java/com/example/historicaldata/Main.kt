@@ -20,8 +20,8 @@ fun main() {
             // Do not rethrow in main() to allow clean exit for logging
         }
         
-        println("Waiting 1 minute for next update...")
-        Thread.sleep(60_000)
+        println("Waiting 5 minutes for next update...")
+        Thread.sleep(300_000)
     }
 }
 

@@ -2,16 +2,18 @@ package com.example.platformutil
 
 import java.time.ZoneId
 
+// ========================= PROFIT GROUP CONFIG =========================
 data class ProfitGroupConfig(
-    /** FRACTIONS: 0.05 = 5% */
-    val thresholds: DoubleArray = doubleArrayOf(0.05, 0.03, 0.02),
-    val localLowLookbackMinutes: Int = 5,
-    /** FRACTION: 0.20 = 20% */
-    val maxDrawdownAllowed: Double = 0.20,
+    /** FRACTIONS: ETH micro-pattern thresholds (auto-scaled from TP if needed) */
+    val thresholds: DoubleArray = doubleArrayOf(0.008, 0.006, 0.004),  // 0.8%, 0.6%, 0.4%
+    val localLowLookbackMinutes: Int = 5,                              // lookback for local lows
 
-    val requireContinuous: Boolean = false,
-    val dedupeOverlapping: Boolean = true,
-    val sortBy: ProfitGroupSort = ProfitGroupSort.GAIN_DESC,
+    /** Maximum allowed drawdown per group (FRACTION, 0.05 = 5%) */
+    val maxDrawdownAllowed: Double = 0.05,                             // 5%
+
+    val requireContinuous: Boolean = true,                             // require strict continuity
+    val dedupeOverlapping: Boolean = true,                             // remove overlapping groups
+    val sortBy: ProfitGroupSort = ProfitGroupSort.GAIN_DESC,           // sort by gain
 
     /** Console/reporting */
     val maxGroupsToPrint: Int = Int.MAX_VALUE,
@@ -48,50 +50,81 @@ data class ProfitGroupConfig(
     }
 }
 
+// ========================= BACKTEST CONFIG =========================
 data class BacktestConfig(
-    val lookbackMinutes: Int = 30,
+    val lookbackMinutes: Int = 60,                 // 1h lookback for RuleGate features
 
     /** FRACTIONS */
-    val takeProfit: Double = 0.03,
-    val stopLoss: Double = 0.015,
+    val takeProfit: Double = 0.008,                // 0.8%
+    val stopLoss: Double = 0.004,                  // 0.4%
 
     /** Costs (FRACTIONS) */
     val feePerSide: Double = BINANCE_FEE,
-    val slippagePerSide: Double = 0.0002,
+    val slippagePerSide: Double = 0.0001,
 
     val worstCaseIfBothHit: Boolean = true,
     val allowOverlappingTrades: Boolean = false,
 
-    /** What you already started centralizing */
-    val horizonMinutes: Int = 60,
+    /** Horizon for expected trade completion */
+    val horizonMinutes: Int = 60,                  // ~1h
 
     /** Candle size */
-    val intervalMillis: Long = 60_000L,
+    val intervalMillis: Long = 5 * 60_000L,        // 5-minute candles
 )
 
+// ========================= EVENT STUDY CONFIG =========================
 data class EventStudyConfig(
     val negativeSampleEveryN: Int = 50,
     val seed: Int = 1337,
 
-    val patternBars: Int = 3,
-    val contextBars: Int = 30,
+    val patternBars: Int = 3,                      // short ETH patterns
+    val contextBars: Int = 25,                     // context length for quality
 
-    val topK: Int = 30,
-    val minPosCount: Int = 2,
+    val topK: Int = 50,
+
+    /**
+     * IMPORTANT:
+     * Raising this reduces “rare winners” and increases robustness.
+     * For “trade regularly”, start at 5. (Was 2.)
+     */
+    val minPosCount: Int = 5,
+
     val maxNegatives: Int = 50_000,
 
-    // ✅ quality gate (all config-driven)
-    val minPosEventsToRun: Int = 50,          // after history filter
-    val minNegSamplesToRun: Int = 2_000,      // after exclusions + cap
-    val minDistinctFullKeysToRun: Int = 200,  // ensure we aren’t learning from tiny keyspace
+    // ✅ quality gate
+    val minPosEventsToRun: Int = 10,
+    val minNegSamplesToRun: Int = 500,
+    val minDistinctFullKeysToRun: Int = 30,
 )
 
+// ========================= SIGNAL CONFIG =========================
 data class SignalConfig(
-    val ret30mMax: Double = -0.005,
-    val volumeZMin: Double = 1.0,
-    val contractionMin: Double = 1.0,
+    /**
+     * Minimum allowed 30m return (FRACTION).
+     * Example: -0.01 means “don’t long if down more than 1% in last 30m”.
+     */
+    val ret30mMin: Double = -0.01,
+
+    /**
+     * Minimum volume z-score.
+     * If 0.0 you block ~half the market. For more trades use negatives.
+     */
+    val volumeZMin: Double = -0.5,
+
+    /**
+     * contraction = recentVolStd / baselineVolStd
+     * You want this <= some MAX. (Name was previously misleading.)
+     */
+    val contractionMax: Double = 1.10,
+
+    /**
+     * Optional: require non-negative trend slope for long entries.
+     * 0.0 = allow flat. Small positive = more selective.
+     */
+    val trendSlopeMin: Double = 0.0,
 )
 
+// ========================= ALGO CONFIG =========================
 data class AlgoConfig(
     val profitGroup: ProfitGroupConfig = ProfitGroupConfig(),
     val backtest: BacktestConfig = BacktestConfig(),
@@ -100,9 +133,11 @@ data class AlgoConfig(
 ) {
     fun id(): String =
         "TP=${pct(backtest.takeProfit)} SL=${pct(backtest.stopLoss)} HZ=${backtest.horizonMinutes}m " +
-                "DD=${pct(profitGroup.maxDrawdownAllowed)} LL=${profitGroup.localLowLookbackMinutes}m"
+                "DD=${pct(profitGroup.maxDrawdownAllowed)} LL=${profitGroup.localLowLookbackMinutes}m " +
+                "SG(ret30=${pct(signal.ret30mMin)} volZ>=${fmt(signal.volumeZMin)} contr<=${fmt(signal.contractionMax)} slope>=${fmt(signal.trendSlopeMin)})"
 
     private fun pct(x: Double): String = "%.2f%%".format(x * 100.0)
+    private fun fmt(x: Double): String = "%.2f".format(x)
 }
 
 enum class ProfitGroupSort { TIME_ASC, GAIN_DESC, DRAWDOWN_ASC }

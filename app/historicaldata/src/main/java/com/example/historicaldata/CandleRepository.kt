@@ -44,9 +44,9 @@ internal class CandleRepositoryImpl : CandleRepository {
     }
 
     override fun cleanupOldCandles(): Int {
-        val sixMonthsAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(180)
+        val nineMonthsAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(270)
         return transaction {
-            Candles.deleteWhere { Candles.openTime less sixMonthsAgo }
+            Candles.deleteWhere { Candles.openTime less nineMonthsAgo }
         }
     }
 }

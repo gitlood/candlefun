@@ -31,30 +31,19 @@ fun printBotRoster(bots: List<BotSpec>) {
         return
     }
 
-    val border = "═".repeat(160)
+    val border = "═".repeat(200)
     println("\n$border")
     println(" ACTIVE BOT ROSTER (Count: ${bots.size})")
     println(border)
-    // Table Header
-    println("%-85s | %-30s | %-8s | %-8s | %-8s | %-8s".format(
-        "Name", "Patterns", "TP%", "SL%", "Look(m)", "Vol-Z"
-    ))
-    println("-".repeat(160))
 
     bots.forEach { bot ->
-        // Format patterns as a comma-separated string if there are multiple
-        val patternsDisplay = bot.patterns.joinToString(", ").let {
-            if (it.length > 30) it.take(27) + "..." else it
-        }
-
-        println("%-85s | %-30s | %-8.2f%% | %-8.2f%% | %-8d | %-8.2f".format(
-            bot.name.take(85),
-            patternsDisplay,
-            bot.cfg.backtest.takeProfit * 100,
-            bot.cfg.backtest.stopLoss * 100,
-            bot.cfg.backtest.lookbackMinutes,
-            bot.cfg.signal.volumeZMin
-        ))
+        println("Name        : ${bot.name}")
+        println("Symbol      : ${bot.trade.symbol} | Mode: ${bot.trade.mode} | MaxPos: ${bot.trade.maxOpenPositions}")
+        println("Patterns    : ${bot.patterns.joinToString(", ")}")
+        println("TP / SL     : ${bot.cfg.backtest.takeProfit * 100}% / ${bot.cfg.backtest.stopLoss * 100}%")
+        println("Lookback    : ${bot.cfg.backtest.lookbackMinutes} min | Horizon: ${bot.cfg.backtest.horizonMinutes} min")
+        println("Volume ZMin : ${bot.cfg.signal.volumeZMin}")
+        println("-".repeat(200))
     }
     println("$border\n")
 }

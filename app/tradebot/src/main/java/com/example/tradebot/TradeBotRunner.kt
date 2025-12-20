@@ -11,76 +11,87 @@ fun main() = runBlocking {
 
 object TradeBotRunner {
 
+    private val COLORS = listOf(31, 32, 33, 34, 35, 36, 37)
+
     suspend fun run() {
-        // 1. Initialize API and Repo
         val api = BinanceTestNetApiService.create()
         val repo = HistoricalDataRepository.create()
 
-        // 2. Load your bot specifications (from JSON, DB, or hardcoded)
         val botSpecs = readBotSpecs()
-
-        // 3. Instantiate a Bot for every Spec
-        val bots = botSpecs.map { spec -> TradeBot(api, spec) }
-
-        // Print the roster once at startup
-        printRoster(botSpecs)
-
-        var tickCount = 0
-        while (true) {
-            try {
-                // 4. Fetch the latest candles once per cycle
-                val allCandles = repo.getAllCandles()
-
-                // 5. CYCLE THROUGH ALL BOTS
-                for (bot in bots) {
-                    // Let the bot handle its own exit/entry logic
-                    bot.onCandles(allCandles)
-                }
-
-                val dots = ".".repeat((tickCount % 3) + 1).padEnd(3)
-                print("\r[Cycle ${tickCount++}] Scanning markets$dots")
-                System.out.flush() // Ensure it prints immediately
-
-            } catch (e: Exception) {
-                println("\nError in loop: ${e.message}")
-            }
-
-            // Wait 1 minute before next cycle
-            Thread.sleep(60_000L)
-        }
-    }
-
-    private fun printRoster(bots: List<BotSpec>) {
-        if (bots.isEmpty()) {
-            println(" [!] NO BOTS LOADED ")
+        if (botSpecs.isEmpty()) {
+            println(" [!] NO BOTS LOADED. Exiting.")
             return
         }
 
-        val border = "═".repeat(160)
+        printRosterVerbose(botSpecs)
+
+        val bots = botSpecs.mapIndexed { idx, spec ->
+            TradeBot(api, spec).also { it.consoleColorCode = COLORS[idx % COLORS.size] }
+        }
+
+        var tickCount = 0
+        var lastSeenLatestOpenTime: Long = Long.MIN_VALUE
+
+        while (true) {
+            try {
+                val allCandles = repo.getAllCandles()
+                if (allCandles.isEmpty()) {
+                    println("[Cycle $tickCount] No candles in DB.")
+                    tickCount++
+                    kotlinx.coroutines.delay(60_000L)
+                    continue
+                }
+
+                val latest = allCandles.maxBy { it.openTime }
+                val latestOpenTime = latest.openTime
+
+                // ✅ Only run bots when a NEW candle appears
+                if (latestOpenTime <= lastSeenLatestOpenTime) {
+                    println("[Cycle $tickCount] No new candle yet (latestOpenTime=$latestOpenTime). Skipping.")
+                    tickCount++
+                    kotlinx.coroutines.delay(60_000L)
+                    continue
+                }
+
+                lastSeenLatestOpenTime = latestOpenTime
+
+                println("\n[Cycle $tickCount] New candle detected | latestOpenTime=$latestOpenTime | Candles=${allCandles.size}")
+
+                for (bot in bots) {
+                    println("[${bot.spec.name.color(bot.consoleColorCode)}] OpenPositions=${bot.openPositions.size}")
+                    bot.onCandles(allCandles)
+                }
+
+                println("[Cycle $tickCount] Completed scan for all bots.")
+            } catch (e: Exception) {
+                println("\nError in main loop: ${e.message}")
+            }
+
+            tickCount++
+            kotlinx.coroutines.delay(60_000L)
+        }
+    }
+
+    private fun String.color(code: Int) = "\u001B[${code}m$this\u001B[0m"
+}
+
+
+    private fun printRosterVerbose(bots: List<BotSpec>) {
+        val border = "═".repeat(200)
         println("\n$border")
         println(" ACTIVE BOT ROSTER (Count: ${bots.size})")
         println(border)
-        // Table Header
-        println("%-85s | %-30s | %-8s | %-8s | %-8s | %-8s".format(
-            "Name", "Patterns", "TP%", "SL%", "Look(m)", "Vol-Z"
-        ))
-        println("-".repeat(160))
 
         bots.forEach { bot ->
-            // Format patterns as a comma-separated string if there are multiple
-            val patternsDisplay = bot.patterns.joinToString(", ").let {
-                if (it.length > 30) it.take(27) + "..." else it
-            }
-
-            println("%-85s | %-30s | %-8.2f%% | %-8.2f%% | %-8d | %-8.2f".format(
-                bot.name.take(85),
-                patternsDisplay,
-                bot.cfg.backtest.takeProfit * 100,
-                bot.cfg.backtest.stopLoss * 100,
-                bot.cfg.backtest.lookbackMinutes,
-                bot.cfg.signal.volumeZMin
-            ))
+            println("Name        : ${bot.name}")
+            println("Symbol      : ${bot.trade.symbol} | Mode: ${bot.trade.mode} | MaxPos: ${bot.trade.maxOpenPositions}")
+            println("Patterns    : ${bot.patterns.joinToString(", ")}")
+            println("TP / SL     : ${bot.cfg.backtest.takeProfit*100}% / ${bot.cfg.backtest.stopLoss*100}%")
+            println("Lookback    : ${bot.cfg.backtest.lookbackMinutes} min | Horizon: ${bot.cfg.backtest.horizonMinutes} min")
+            println("Volume ZMin : ${bot.cfg.signal.volumeZMin}")
+            println("-".repeat(200))
         }
         println("$border\n")
     }
-}
+
+    private fun String.color(code: Int) = "\u001B[${code}m$this\u001B[0m"

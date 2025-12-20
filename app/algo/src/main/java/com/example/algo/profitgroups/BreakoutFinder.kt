@@ -49,21 +49,21 @@ class BreakoutFinder(candles: List<Candle>) {
     fun dedupeOverlaps(groups: List<BreakoutGroup>): List<BreakoutGroup> {
         if (groups.isEmpty()) return emptyList()
         val sorted = groups.sortedBy { it.entryOpenTime }
-        val out = ArrayList<BreakoutGroup>()
+        val out = mutableListOf<BreakoutGroup>()
         var current = sorted[0]
-        for (i in 1 until sorted.size) {
-            val g = sorted[i]
-            val overlaps = g.entryOpenTime <= current.windowEndOpenTime
-            current = if (overlaps) {
-                if (g.gainPctToPeakHigh > current.gainPctToPeakHigh) g else current
+        for (g in sorted.drop(1)) {
+            if (g.entryOpenTime <= current.windowEndOpenTime) {
+                // keep group with higher gain
+                if (g.gainPctToPeakHigh > current.gainPctToPeakHigh) current = g
             } else {
                 out.add(current)
-                g
+                current = g
             }
         }
         out.add(current)
         return out
     }
+
 
     private fun isContinuousWindow(
         i: Int,

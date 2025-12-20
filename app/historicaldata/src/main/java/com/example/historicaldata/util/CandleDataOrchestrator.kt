@@ -27,15 +27,15 @@ class CandleDataOrchestrator(
     }
 
     private fun backfillHistoricalData() = runBlocking {
-        val sixMonthsAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(180)
-        val candleMs = TimeUnit.MINUTES.toMillis(1)
+        val nineMonthsAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(270)
+        val candleMs = TimeUnit.MINUTES.toMillis(5)
         val candlesPerRequest = 1000
 
-        var cursor = sixMonthsAgo
+        var cursor = nineMonthsAgo
         var totalDownloaded = 0
-        val totalCandlesToFetch = (TimeUnit.DAYS.toMillis(180) / candleMs).toInt()
+        val totalCandlesToFetch = (TimeUnit.DAYS.toMillis(270) / candleMs).toInt()
 
-        println("Starting historical download (6 months)...")
+        println("Starting historical download (9 months)...")
 
         while (cursor < System.currentTimeMillis()) {
             val endTime = min(
@@ -46,7 +46,6 @@ class CandleDataOrchestrator(
             val klines = binanceApiService.getKlines(
                 symbol = BINANCE_SYMBOL,
                 limit = candlesPerRequest,
-              //  apiKey = apiKey,
                 startTime = cursor,
                 endTime = endTime
             )

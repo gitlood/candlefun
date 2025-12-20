@@ -6,7 +6,7 @@ import com.example.network.model.KlineResponse
 interface BinanceApiService {
     suspend fun getKlines(
         symbol: String,
-        interval: String = "1m",
+        interval: String = "5m",
         limit: Int = 1000,
        // apiKey: String,
         startTime: Long? = null,

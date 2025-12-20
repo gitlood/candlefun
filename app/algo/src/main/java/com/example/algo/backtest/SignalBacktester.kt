@@ -14,12 +14,21 @@ import kotlin.math.sqrt
 
 object SignalBacktester {
 
-    // ---------------- Rule-gated signal backtest (uses AlgoConfig) ----------------
+    // ---------------- Rule-gated signal backtest ----------------
 
     private fun shouldEnter(f: BacktestFeatures, r: SignalConfig): Boolean {
-        if (f.ret30m > r.ret30mMax) return false
+        // Don’t long deep dumps
+        if (f.ret30m < r.ret30mMin) return false
+
+        // Allow below-average volume by default (negative z)
         if (f.volumeZ < r.volumeZMin) return false
-        if (f.contraction10vLookback < r.contractionMin) return false
+
+        // contraction = recentVol / baselineVol; require NOT too expanded
+        if (f.contraction10vLookback > r.contractionMax) return false
+
+        // Optional trend filter
+        if (f.trendSlope < r.trendSlopeMin) return false
+
         return true
     }
 
@@ -41,6 +50,7 @@ object SignalBacktester {
         val pattern: String,
         val signals: Int,
         val trades: Int,
+        val tradesPerDay: Double,
         val winRate: Double,
         val avgNet: Double,
         val medNet: Double,
@@ -51,6 +61,13 @@ object SignalBacktester {
         val hz: Int
     )
 
+    // --- Improvement bundle:
+    // (1) Full-key matching (seq|ret|rng|vol|last) instead of collapsing to seq-only
+    // (2) Preference to most-specific match when preferSeqOnly=false
+    // (3) Breakout confirmation entry (setup -> breakout -> enter)
+    // (4) Optional ignoreCosts mode (sanity)
+    // (5) Candle time fixed: use openTime everywhere (already done here)
+
     fun runPatternBacktests(
         candlesRaw: List<Candle>,
         patterns: List<String>,
@@ -59,6 +76,21 @@ object SignalBacktester {
         timingMode: TimingMode = TimingMode.TRADABLE_NEXT_OPEN,
         entryPriceMode: EntryPriceMode = EntryPriceMode.ENTRY_CANDLE_OPEN,
         useRuleGate: Boolean = true,
+        /**
+         * IMPORTANT:
+         * true  = prefer broad matches (seq-only first)
+         * false = prefer specific matches (FULL KEY first: seq|ret|rng|vol|last, then seq|last, then seq)
+         */
+        preferSeqOnly: Boolean = false,
+
+        // ---- Breakout confirmation (recommended for "pre-breakout setups") ----
+        useBreakoutConfirm: Boolean = true,
+        breakoutLookaheadMinutes: Int = cfg.backtest.horizonMinutes, // default: allow breakout within horizon
+        breakoutBufferPct: Double = 0.0005, // 0.05% above setup-high (tune)
+        breakoutRequireCloseAbove: Boolean = false, // if true: require close >= threshold (stricter)
+
+        // ---- Sanity: turn off costs to see if signal has ANY raw edge ----
+        ignoreCosts: Boolean = false,
     ): List<PatternBacktestRow> = runPatternBacktests(
         candlesRaw = candlesRaw,
         patterns = patterns,
@@ -69,8 +101,129 @@ object SignalBacktester {
         intervalMillisOverride = intervalMillisOverride,
         timingMode = timingMode,
         entryPriceMode = entryPriceMode,
-        useRuleGate = useRuleGate
+        useRuleGate = useRuleGate,
+        preferSeqOnly = preferSeqOnly,
+        useBreakoutConfirm = useBreakoutConfirm,
+        breakoutLookaheadMinutes = breakoutLookaheadMinutes,
+        breakoutBufferPct = breakoutBufferPct,
+        breakoutRequireCloseAbove = breakoutRequireCloseAbove,
+        ignoreCosts = ignoreCosts
     )
+
+    private data class PatternQuery(
+        val normalizedKey: String,  // e.g. "seq=R2.R2.R1|ret=DN2|rng=L|vol=b|last=N"
+        val seqKey: String,         // e.g. "seq=R2.R2.R1"
+        val last: String?,          // e.g. "N"
+        val ret: String?,           // e.g. "DN2"
+        val rng: String?,           // e.g. "L"
+        val vol: String?,           // e.g. "b"
+        val specificity: Int        // # of optional tokens present
+    )
+
+    private fun parsePatternQuery(raw: String): PatternQuery? {
+        val t0 = raw.trim()
+        if (t0.isBlank()) return null
+
+        val token0 = Regex("""pattern=([^\s]+)""")
+            .find(t0)?.groupValues?.get(1)
+            ?: t0
+
+        val cleaned = token0
+            .trim().trimEnd(',', ';')
+            .replace("seq_", "seq=")
+            .replace("last_", "last=")
+
+        val parts = cleaned.split('|').map { it.trim() }.filter { it.isNotBlank() }
+
+        val seqToken = parts.firstOrNull { it.startsWith("seq=") } ?: return null
+
+        val retToken = parts.firstOrNull { it.startsWith("ret=") }
+        val rngToken = parts.firstOrNull { it.startsWith("rng=") }
+        val volToken = parts.firstOrNull { it.startsWith("vol=") }
+        val lastToken = parts.firstOrNull { it.startsWith("last=") }
+
+        val last = lastToken?.substringAfter("last=", "")
+        val ret = retToken?.substringAfter("ret=", "")
+        val rng = rngToken?.substringAfter("rng=", "")
+        val vol = volToken?.substringAfter("vol=", "")
+
+        val normalized = buildList {
+            add(seqToken)
+            if (!ret.isNullOrBlank()) add("ret=$ret")
+            if (!rng.isNullOrBlank()) add("rng=$rng")
+            if (!vol.isNullOrBlank()) add("vol=$vol")
+            if (!last.isNullOrBlank()) add("last=$last")
+        }.joinToString("|")
+
+        val specificity =
+            (if (!last.isNullOrBlank()) 1 else 0) +
+                    (if (!ret.isNullOrBlank()) 1 else 0) +
+                    (if (!rng.isNullOrBlank()) 1 else 0) +
+                    (if (!vol.isNullOrBlank()) 1 else 0)
+
+        return PatternQuery(
+            normalizedKey = normalized,
+            seqKey = seqToken,
+            last = last,
+            ret = ret,
+            rng = rng,
+            vol = vol,
+            specificity = specificity
+        )
+    }
+
+    private data class KeyBundle(
+        val seqKey: String,
+        val last: String,
+        val ret: String,
+        val rng: String,
+        val vol: String,
+        val setupHigh: Double
+    ) {
+        val seqOnly: String get() = seqKey
+        val seqWithLast: String get() = "$seqKey|last=$last"
+        val fullKey: String get() = "$seqKey|ret=$ret|rng=$rng|vol=$vol|last=$last"
+    }
+
+    private fun matchesStrict(q: PatternQuery, k: KeyBundle): Boolean {
+        if (q.last != null && q.last != k.last) return false
+        if (q.ret != null && q.ret != k.ret) return false
+        if (q.rng != null && q.rng != k.rng) return false
+        if (q.vol != null && q.vol != k.vol) return false
+        return true
+    }
+
+    private fun matchesRelaxed(q: PatternQuery, k: KeyBundle): Boolean {
+        // Relaxed means: seq must match (already indexed), and if last is specified it must match.
+        // ret/rng/vol are ignored in relaxed mode.
+        if (q.last != null && q.last != k.last) return false
+        return true
+    }
+
+    private fun pickBestMatch(
+        candidates: List<PatternQuery>,
+        k: KeyBundle,
+        preferSeqOnly: Boolean
+    ): PatternQuery? {
+        if (candidates.isEmpty()) return null
+
+        val strictMatches = candidates.filter { matchesStrict(it, k) }
+        val pool = if (strictMatches.isNotEmpty()) strictMatches else candidates.filter { matchesRelaxed(it, k) }
+
+        if (pool.isEmpty()) return null
+
+        return if (preferSeqOnly) {
+            // Least-specific first: seq-only beats seq|last beats full key
+            pool.minWithOrNull(
+                compareBy<PatternQuery> { it.specificity }.thenBy { it.normalizedKey.length }
+            )
+        } else {
+            // Most-specific first: full key beats seq|last beats seq-only
+            pool.maxWithOrNull(
+                compareBy<PatternQuery> { it.specificity }.thenBy { it.normalizedKey.length }
+            )
+        }
+    }
 
     fun runPatternBacktests(
         candlesRaw: List<Candle>,
@@ -83,6 +236,14 @@ object SignalBacktester {
         timingMode: TimingMode = TimingMode.TRADABLE_NEXT_OPEN,
         entryPriceMode: EntryPriceMode = EntryPriceMode.ENTRY_CANDLE_OPEN,
         useRuleGate: Boolean = true,
+        preferSeqOnly: Boolean = false,
+
+        useBreakoutConfirm: Boolean = true,
+        breakoutLookaheadMinutes: Int = backtestConfig.horizonMinutes,
+        breakoutBufferPct: Double = 0.0005,
+        breakoutRequireCloseAbove: Boolean = false,
+
+        ignoreCosts: Boolean = false
     ): List<PatternBacktestRow> {
         if (candlesRaw.isEmpty() || patterns.isEmpty()) {
             println("PatternBacktest: nothing to do (candles=${candlesRaw.size}, patterns=${patterns.size})")
@@ -97,63 +258,96 @@ object SignalBacktester {
         val localLowLookbackBars =
             barsFromMinutesOrZero(profitGroupConfig.localLowLookbackMinutes, intervalMillis)
 
-        // ✅ One TP per config (the bot TP), not the full threshold set
         val tpPctToTest = backtestConfig.takeProfit * 100.0
-
         val stopLossPct = backtestConfig.stopLoss * 100.0
         val maxDrawdownPctAllowed = profitGroupConfig.maxDrawdownAllowed * 100.0
 
         val requestedPatternCount = patterns.size
 
-        val patternSet = patterns
-            .flatMap(::normalizeToSeqKeys)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .toHashSet()
+        // Parse + index patterns by seq=...
+        val uniqueKeys = HashSet<String>(patterns.size * 2)
+        val queriesBySeq = HashMap<String, MutableList<PatternQuery>>(patterns.size * 2)
 
-        if (patternSet.isEmpty()) {
+        for (p in patterns) {
+            val q = parsePatternQuery(p) ?: continue
+            uniqueKeys.add(q.normalizedKey)
+            queriesBySeq.getOrPut(q.seqKey) { mutableListOf() }.add(q)
+        }
+
+        if (queriesBySeq.isEmpty()) {
             println("PatternBacktest: no usable patterns after normalization (patterns=${patterns.size})")
             return emptyList()
         }
 
-        val entryShift = if (timingMode == TimingMode.TRADABLE_NEXT_OPEN) 1 else 0
+        // EntryShift used ONLY for building the setup key (pattern ends at entryIndex-1 when shift=1).
+        val entryShiftForKey = if (timingMode == TimingMode.TRADABLE_NEXT_OPEN) 1 else 0
+
         val ruleLookbackBars = barsFromMinutes(backtestConfig.lookbackMinutes, intervalMillis)
+        val breakoutLookaheadBars = barsFromMinutes(breakoutLookaheadMinutes, intervalMillis)
 
         val minEntryIndexNeeded = max(
             max(eventStudyConfig.patternBars, eventStudyConfig.contextBars),
             if (useRuleGate) (ruleLookbackBars + 1) else 1
         ).coerceAtLeast(1)
 
-        val minSignalIndex = (minEntryIndexNeeded - entryShift).coerceAtLeast(1)
-        val maxExclusive =
-            if (entryShift == 1) (series.n - horizonBars) else (series.n - horizonBars + 1)
+        val minSignalIndex = (minEntryIndexNeeded - entryShiftForKey).coerceAtLeast(1)
+        val maxSignalIndexExclusive = (series.n - 1).coerceAtLeast(minSignalIndex)
 
-        val indicesByPattern = HashMap<String, IntArrayList>(patternSet.size * 2)
+        val indicesByPattern = HashMap<String, IntArrayList>(uniqueKeys.size * 2)
 
-        for (signalIndex in minSignalIndex until maxExclusive) {
-            val entryIndex = signalIndex + entryShift
+        for (signalIndex in minSignalIndex until maxSignalIndexExclusive) {
+            val keyEvalIndex = signalIndex + entryShiftForKey
 
-            val lowCheckIndex = if (entryShift == 1) signalIndex else entryIndex
+            // local low check is about the last candle of the pattern (signalIndex when shift=1)
+            val lowCheckIndex = if (entryShiftForKey == 1) signalIndex else keyEvalIndex
             if (localLowLookbackBars > 0 && !isLocalLow(series, lowCheckIndex, localLowLookbackBars)) continue
+
+            val key = buildKeyBundle(
+                s = series,
+                entryIndex = keyEvalIndex,
+                patternBars = eventStudyConfig.patternBars,
+                contextBars = eventStudyConfig.contextBars,
+                ruleLookbackBarsForBuckets = max(ruleLookbackBars, eventStudyConfig.contextBars + 5), // cheap baseline
+                lookbackMinutesForRetBucket = backtestConfig.lookbackMinutes
+            ) ?: continue
+
+            val seqCandidates = queriesBySeq[key.seqKey] ?: continue
+            val picked = pickBestMatch(seqCandidates, key, preferSeqOnly) ?: continue
+            val matchKey = picked.normalizedKey
+
+            val entryIndex: Int = if (useBreakoutConfirm) {
+                if (!key.setupHigh.isFinite() || key.setupHigh <= 0.0) continue
+
+                val threshold = key.setupHigh * (1.0 + breakoutBufferPct)
+                val trigger = findBreakoutTriggerIndex(
+                    s = series,
+                    startIndex = keyEvalIndex,
+                    maxLookaheadBars = breakoutLookaheadBars,
+                    threshold = threshold,
+                    requireCloseAbove = breakoutRequireCloseAbove
+                ) ?: continue
+
+                // tradable entry = next open after trigger candle if TRADABLE_NEXT_OPEN
+                val proposed = if (timingMode == TimingMode.TRADABLE_NEXT_OPEN) trigger + 1 else trigger
+                if (proposed < 0 || proposed >= series.n) continue
+
+                // Need enough space to simulate horizon from entry
+                val last = proposed + horizonBars - 1
+                if (last >= series.n) continue
+
+                proposed
+            } else {
+                // Old behavior: enter immediately at keyEvalIndex
+                val proposed = keyEvalIndex
+                val last = proposed + horizonBars - 1
+                if (last >= series.n) continue
+                proposed
+            }
 
             if (useRuleGate) {
                 val f = series.featuresAt(entryIndex, ruleLookbackBars) ?: continue
                 if (!shouldEnter(f, signalConfig)) continue
             }
-
-            val keyPair = buildCollapsedKeys(
-                s = series,
-                entryIndex = entryIndex,
-                patternBars = eventStudyConfig.patternBars,
-                contextBars = eventStudyConfig.contextBars
-            ) ?: continue
-
-            val matchKey =
-                when {
-                    patternSet.contains(keyPair.seqWithLast) -> keyPair.seqWithLast
-                    patternSet.contains(keyPair.seqOnly) -> keyPair.seqOnly
-                    else -> null
-                } ?: continue
 
             indicesByPattern.getOrPut(matchKey) { IntArrayList() }.add(entryIndex)
         }
@@ -161,16 +355,34 @@ object SignalBacktester {
         println("============================================================")
         println("=== Pattern Backtest (config-driven, sweep-compatible) ===")
         println("Candles: ${series.n} | Interval: ${intervalMillis / 1000}s")
-        println("Timing: $timingMode | EntryPriceMode: $entryPriceMode")
+        println("Timing: $timingMode | EntryPriceMode: $entryPriceMode | preferSeqOnly=$preferSeqOnly")
         println("RuleGate: $useRuleGate (lookback=${backtestConfig.lookbackMinutes}m)")
+        if (useRuleGate) {
+            println(
+                "Gate: ret30m>=${pct(signalConfig.ret30mMin)}  " +
+                        "volZ>=${fmt(signalConfig.volumeZMin)}  " +
+                        "contr<=${fmt(signalConfig.contractionMax)}  " +
+                        "slope>=${fmt(signalConfig.trendSlopeMin)}"
+            )
+        }
         println("LocalLow lookback: ${profitGroupConfig.localLowLookbackMinutes}m (${localLowLookbackBars} bars)")
         println("Horizon: ${backtestConfig.horizonMinutes}m (${horizonBars} bars)")
         println(
             "TP=${fmt(tpPctToTest)}% | SL stop: ${fmt(stopLossPct)}% " +
                     (if (maxDrawdownPctAllowed > 0.0) "| MaxDD cap: ${fmt(maxDrawdownPctAllowed)}%" else "")
         )
-        println("Costs: fee=${pct(backtestConfig.feePerSide)} slip=${pct(backtestConfig.slippagePerSide)} per side")
-        println("Patterns requested: $requestedPatternCount | Unique normalized keys: ${patternSet.size} | Patterns with matches: ${indicesByPattern.size}")
+        println(
+            "BreakoutConfirm: $useBreakoutConfirm " +
+                    "(lookahead=${breakoutLookaheadMinutes}m/${breakoutLookaheadBars} bars, " +
+                    "buffer=${pct(breakoutBufferPct)}, closeAbove=$breakoutRequireCloseAbove)"
+        )
+        val feeUsed = if (ignoreCosts) 0.0 else backtestConfig.feePerSide
+        val slipUsed = if (ignoreCosts) 0.0 else backtestConfig.slippagePerSide
+        println("Costs: fee=${pct(feeUsed)} slip=${pct(slipUsed)} per side (ignoreCosts=$ignoreCosts)")
+        println(
+            "Patterns requested: $requestedPatternCount | Unique normalized keys: ${uniqueKeys.size} | " +
+                    "Seq buckets: ${queriesBySeq.size} | Patterns with matches: ${indicesByPattern.size}"
+        )
         println("============================================================")
 
         return printPatternTableForTp(
@@ -180,8 +392,8 @@ object SignalBacktester {
             horizonBars = horizonBars,
             stopLossPct = stopLossPct,
             maxDrawdownPctAllowed = maxDrawdownPctAllowed,
-            feePerSide = backtestConfig.feePerSide,
-            slippagePerSide = backtestConfig.slippagePerSide,
+            feePerSide = feeUsed,
+            slippagePerSide = slipUsed,
             timingMode = timingMode,
             entryPriceMode = entryPriceMode,
             allowOverlappingTrades = backtestConfig.allowOverlappingTrades,
@@ -189,21 +401,58 @@ object SignalBacktester {
         )
     }
 
-    private fun normalizeToSeqKeys(raw: String): List<String> {
-        val t = raw.trim()
-        val token = Regex("""pattern=([^\s]+)""").find(t)?.groupValues?.get(1) ?: t
-        val cleaned = token.trim().trimEnd(',', ';')
-
-        val parts = cleaned.split('|')
-        val seq = parts.firstOrNull { it.startsWith("seq=") } ?: return emptyList()
-        val last = parts.firstOrNull { it.startsWith("last=") }
-
-        return if (last != null) listOf(seq, "$seq|$last") else listOf(seq)
-    }
-
     // ---------------- Pattern table internals ----------------
 
-    private data class KeyPair(val seqOnly: String, val seqWithLast: String)
+    private enum class ExitKind { TP, SL, HZ }
+
+    private data class TradeLite(
+        val entryIndex: Int,
+        val exitIndex: Int,
+        val netPct: Double,
+        val exitKind: ExitKind
+    )
+
+    private fun compoundInTimeOrder(trades: List<TradeLite>): Double {
+        if (trades.isEmpty()) return 0.0
+        val sorted = trades.sortedBy { it.entryIndex }
+        var equity = 1.0
+        for (t in sorted) equity *= (1.0 + t.netPct)
+        return equity - 1.0
+    }
+
+    private fun isLocalLow(s: CandleSeries, entryIndex: Int, lookbackBars: Int): Boolean {
+        if (lookbackBars <= 0) return true
+        if (entryIndex <= 0 || entryIndex >= s.n) return false
+        val lowNow = s.low[entryIndex]
+        val start = (entryIndex - lookbackBars).coerceAtLeast(0)
+        for (i in start until entryIndex) {
+            if (s.low[i] < lowNow) return false
+        }
+        return true
+    }
+
+    private fun findBreakoutTriggerIndex(
+        s: CandleSeries,
+        startIndex: Int,
+        maxLookaheadBars: Int,
+        threshold: Double,
+        requireCloseAbove: Boolean
+    ): Int? {
+        val endExclusive = min(s.n, startIndex + maxLookaheadBars + 1)
+        if (startIndex < 0 || startIndex >= s.n) return null
+        if (!threshold.isFinite() || threshold <= 0.0) return null
+
+        for (j in startIndex until endExclusive) {
+            val h = s.high[j]
+            if (!h.isFinite()) continue
+            if (h >= threshold) {
+                if (!requireCloseAbove) return j
+                val c = s.close[j]
+                if (c.isFinite() && c >= threshold) return j
+            }
+        }
+        return null
+    }
 
     private fun printPatternTableForTp(
         s: CandleSeries,
@@ -229,6 +478,10 @@ object SignalBacktester {
             if (stopLossPct <= 0.0 && maxDrawdownPctAllowed > 0.0) maxDrawdownPctAllowed
             else if (stopLossPct > 0.0 && maxDrawdownPctAllowed > 0.0) min(stopLossPct, maxDrawdownPctAllowed)
             else stopLossPct
+
+        val spanDays = ((s.openTime[s.n - 1] - s.openTime[0]).toDouble() / 86_400_000.0).let {
+            if (it.isFinite() && it > 0.0) it else 1.0
+        }
 
         for ((pattern, idxs) in indicesByPattern) {
             val signals = idxs.size()
@@ -275,12 +528,15 @@ object SignalBacktester {
             val sumNet = netsSorted.sum()
             val compNet = compoundInTimeOrder(trades)
 
+            val tradesPerDay = trCount / spanDays
+
             rows.add(
                 PatternBacktestRow(
                     tpPct = tpPct,
                     pattern = pattern,
                     signals = signals,
                     trades = trCount,
+                    tradesPerDay = tradesPerDay,
                     winRate = winRate,
                     avgNet = avgNet,
                     medNet = medNet,
@@ -295,6 +551,7 @@ object SignalBacktester {
 
         rows.sortWith(
             compareByDescending<PatternBacktestRow> { it.compNet }
+                .thenByDescending { it.tradesPerDay }
                 .thenByDescending { it.sumNet }
                 .thenByDescending { it.winRate }
         )
@@ -304,15 +561,16 @@ object SignalBacktester {
         println("ExitKind: TP=take-profit hit | SL=stop-loss hit | HZ=horizon close (TP not hit in time)")
         println("NOTE: win% = profitable trades (net > 0), not TP-hit%.")
         println("------------------------------------------------------------")
-        println("#   pattern            signals  trades     win%   avgNet    medNet    sumNet  compNet   TP   SL   HZ")
-        println("----------------------------------------------------------------------------------------------------")
+        println("#   pattern                               signals  trades  tr/day    win%   avgNet    medNet    sumNet  compNet   TP   SL   HZ")
+        println("-------------------------------------------------------------------------------------------------------------------------------")
 
         rows.forEachIndexed { i, r ->
             println(
                 "${(i + 1).toString().padEnd(3)} " +
-                        "${r.pattern.padEnd(18)} " +
+                        "${r.pattern.padEnd(36)} " +
                         "${r.signals.toString().padStart(7)} " +
                         "${r.trades.toString().padStart(7)} " +
+                        "${fmt(r.tradesPerDay).padStart(7)} " +
                         "${pct(r.winRate).padStart(8)} " +
                         "${pct(r.avgNet).padStart(8)} " +
                         "${pct(r.medNet).padStart(9)} " +
@@ -326,34 +584,6 @@ object SignalBacktester {
         println("============================================================")
 
         return rows
-    }
-
-    private enum class ExitKind { TP, SL, HZ }
-
-    private data class TradeLite(
-        val entryIndex: Int,
-        val exitIndex: Int,
-        val netPct: Double,
-        val exitKind: ExitKind
-    )
-
-    private fun compoundInTimeOrder(trades: List<TradeLite>): Double {
-        if (trades.isEmpty()) return 0.0
-        val sorted = trades.sortedBy { it.entryIndex }
-        var equity = 1.0
-        for (t in sorted) equity *= (1.0 + t.netPct)
-        return equity - 1.0
-    }
-
-    private fun isLocalLow(s: CandleSeries, entryIndex: Int, lookbackBars: Int): Boolean {
-        if (lookbackBars <= 0) return true
-        if (entryIndex <= 0 || entryIndex >= s.n) return false
-        val lowNow = s.low[entryIndex]
-        val start = (entryIndex - lookbackBars).coerceAtLeast(0)
-        for (i in start until entryIndex) {
-            if (s.low[i] < lowNow) return false
-        }
-        return true
     }
 
     private fun simulateLongPercentTpSl(
@@ -427,17 +657,20 @@ object SignalBacktester {
         return TradeLite(entryIndex, exitIndex, netPct, exitKind)
     }
 
-    private fun buildCollapsedKeys(
+    private fun buildKeyBundle(
         s: CandleSeries,
         entryIndex: Int,
         patternBars: Int,
-        contextBars: Int
-    ): KeyPair? {
+        contextBars: Int,
+        ruleLookbackBarsForBuckets: Int,
+        lookbackMinutesForRetBucket: Int
+    ): KeyBundle? {
         val startPat = entryIndex - patternBars
         if (startPat < 1 || entryIndex <= 1) return null
 
         val seq = StringBuilder()
         var lastShape = "N"
+        var setupHigh = Double.NEGATIVE_INFINITY
 
         for (i in startPat until entryIndex) {
             val o = s.open[i]
@@ -447,6 +680,8 @@ object SignalBacktester {
             val range = h - l
             if (!o.isFinite() || !h.isFinite() || !l.isFinite() || !c.isFinite()) return null
             if (range <= 0.0) return null
+
+            setupHigh = max(setupHigh, h)
 
             val body = abs(c - o)
             val upperW = h - max(o, c)
@@ -480,12 +715,76 @@ object SignalBacktester {
             }
         }
 
-        val seqOnly = "seq=$seq"
-        val seqWithLast = "seq=$seq|last=$lastShape"
-        return KeyPair(seqOnly, seqWithLast)
+        // Buckets computed at entryIndex using a cheap rolling baseline
+        val f = s.featuresAt(entryIndex, ruleLookbackBarsForBuckets) ?: return null
+
+        // ret bucket: use lookbackMinutesForRetBucket (NOT ret30m)
+        val lookbackBars = barsFromMinutes(lookbackMinutesForRetBucket, s.intervalMillis)
+        val end = entryIndex - 1
+        val a = (end - lookbackBars).coerceAtLeast(0)
+        val retLookback = retBetweenClose(s, a, end)
+        val retBucket = bucketRet(retLookback)
+
+        // rng bucket: compare last candle range% vs mean range% baseline
+        val rangeNow = if (s.close[end] > 0.0) (s.high[end] - s.low[end]) / s.close[end] else 0.0
+        val rngBucket = bucketRange(rangeNow, f.rangeMean)
+
+        // vol bucket: based on volumeZ
+        val volBucket = bucketVol(f.volumeZ)
+
+        val seqKey = "seq=$seq"
+        return KeyBundle(
+            seqKey = seqKey,
+            last = lastShape,
+            ret = retBucket,
+            rng = rngBucket,
+            vol = volBucket,
+            setupHigh = setupHigh
+        )
     }
 
-    // ---------------- Existing trade simulator + report helpers ----------------
+    private fun retBetweenClose(s: CandleSeries, aIdx: Int, bIdx: Int): Double {
+        val a = aIdx.coerceIn(0, s.n - 1)
+        val b = bIdx.coerceIn(0, s.n - 1)
+        if (a >= b) return 0.0
+        val cA = s.close[a]
+        val cB = s.close[b]
+        if (!cA.isFinite() || !cB.isFinite() || cA <= 0.0) return 0.0
+        return (cB / cA) - 1.0
+    }
+
+    private fun bucketRet(ret: Double): String {
+        // Fraction -> bucket. Tune these to match your EventStudyAnalyzer buckets if needed.
+        // These cutoffs are intentionally "crypto-ish".
+        return when {
+            ret <= -0.015 -> "DN2"
+            ret <= -0.0075 -> "DN1"
+            ret < 0.0075 -> "FL"
+            ret < 0.015 -> "UP1"
+            else -> "UP2"
+        }
+    }
+
+    private fun bucketRange(rangeNow: Double, rangeMean: Double): String {
+        if (!rangeNow.isFinite() || !rangeMean.isFinite() || rangeMean <= 0.0) return "N"
+        val ratio = rangeNow / rangeMean
+        return when {
+            ratio < 0.85 -> "L"
+            ratio > 1.15 -> "H"
+            else -> "N"
+        }
+    }
+
+    private fun bucketVol(volumeZ: Double): String {
+        if (!volumeZ.isFinite()) return "n"
+        return when {
+            volumeZ >= 0.50 -> "b"
+            volumeZ <= -0.50 -> "s"
+            else -> "n"
+        }
+    }
+
+    // ---------------- Helpers ----------------
 
     private fun barsFromMinutes(minutes: Int, intervalMillis: Long): Int =
         ((minutes * 60_000L) / intervalMillis).toInt().coerceAtLeast(1)
@@ -494,7 +793,7 @@ object SignalBacktester {
         if (minutes <= 0) 0 else ((minutes * 60_000L) / intervalMillis).toInt().coerceAtLeast(1)
 
     private fun pct(x: Double): String = String.format("%.2f%%", x * 100.0)
-    private fun fmt(x: Double): String = String.format("%.6f", x)
+    private fun fmt(x: Double): String = String.format("%.4f", x)
 
     private class IntArrayList {
         private var a = IntArray(16)

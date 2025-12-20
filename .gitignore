@@ -14,3 +14,7 @@ build/
 .cxx
 .idea
 *.db
+/active_bots.json
+/AGENTS.md
+/.kotlin/errors/errors-1766130461535.log
+/.kotlin/sessions/kotlin-compiler-4430187799122350179.salive
