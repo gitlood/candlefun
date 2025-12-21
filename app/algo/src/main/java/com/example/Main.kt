@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.SerializationFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.io.File
 import kotlin.math.min
+import kotlinx.coroutines.*
 
 private data class Candidate(
     val cfg: AlgoConfig,
@@ -30,6 +31,11 @@ private data class Candidate(
     val train: SignalBacktester.PatternBacktestRow,
     val validation: SignalBacktester.PatternBacktestRow,
     val test: SignalBacktester.PatternBacktestRow
+)
+
+private data class ConfigResult(
+    val candidates: List<Candidate>,
+    val bestTrainRows: List<SignalBacktester.PatternBacktestRow>
 )
 
 fun main(args: Array<String>) {
@@ -78,6 +84,8 @@ fun main(args: Array<String>) {
         args.firstOrNull { it.startsWith("--orderbook-spread=") }?.substringAfter("=")
     ).ifEmpty { listOf(15.0) }
 
+    val useWalkForward = !args.contains("--no-walkforward")
+
     val dbPath = resolveCandleDbPath(symbol, interval)
 
     println("Fetching $interval $symbol candles from DB ($dbPath)...")
@@ -96,8 +104,15 @@ fun main(args: Array<String>) {
 
     println("Sample span ≈ %.1f days".format(sampleDays))
 
-    val (trainCandles, valCandles, testCandles) = splitCandles(allCandles, split)
-    println("Walk-forward split: train=${trainCandles.size}, val=${valCandles.size}, test=${testCandles.size}")
+    val (trainCandles, valCandles, testCandles) = if (useWalkForward) {
+        val splitResult = splitCandles(allCandles, split)
+        println("Walk-forward split: train=${splitResult.first.size}, val=${splitResult.second.size}, test=${splitResult.third.size}")
+        splitResult
+    } else {
+        Triple(allCandles, allCandles, allCandles)
+    }
+
+    // already logged inside useWalkForward branch above
 
     val rawOrderBookSnapshots = if (orderBookEnabled) {
         loadOrderBookSnapshots(symbol, allCandles.first().openTime)
@@ -145,140 +160,59 @@ fun main(args: Array<String>) {
         localLowLookbacks = listOf(0, 2, 3, 5),
 
         // RuleGate knobs (affects frequency heavily)
-        ret30mMins = listOf(-0.04, -0.03, -0.02, -0.01, -0.005),
-        volumeZMins = listOf(-1.5, -1.0, -0.5, 0.0),
+        ret30mMins = listOf(-0.06, -0.05, -0.04, -0.03, -0.02, -0.01, -0.005),
+        volumeZMins = listOf(-2.0, -1.5, -1.0, -0.5, 0.0),
         contractionMaxes = listOf(1.05, 1.10, 1.20),
         trendSlopeMins = listOf(0.0),
         orderBookEnableds = listOf(orderBookEnabledEffective),
         orderBookMinImbalance10s = orderBookImbalanceList,
+
         orderBookMaxSpreadBps = orderBookSpreadList
     ).toList()
 
-    val candidateMap = LinkedHashMap<String, Candidate>()
+    val enforceOos = useWalkForward
+    val parallelism = args.firstOrNull { it.startsWith("--parallelism=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+        ?.coerceAtLeast(1) ?: Runtime.getRuntime().availableProcessors()
 
-    fun keyOf(cfg: AlgoConfig, pattern: String): String = "${cfg.id()}||$pattern"
-
-    fun oosScore(c: Candidate): Double = min(c.validation.compNet, c.test.compNet)
-
-    for ((i, cfg) in configs.withIndex()) {
-        if (maxConfigsToRun != null && i >= maxConfigsToRun) {
-            println("Reached maxConfigsToRun=$maxConfigsToRun, stopping early.")
-            break
-        }
-
-        if (verbose || i % 50 == 0) {
-            println("\n============================================================")
-            println("RUN #${i + 1}/${configs.size}: ${cfg.id()}")
-            println("============================================================")
-        }
-
-        val finder = HistoricProfitGroupFinder(trainCandles)
-        val breakoutGroups = finder.findAndReport(cfg)
-
-        val gate = ProfitGroupQualityGate.decide(cfg, breakoutGroups)
-        if (!gate.proceed) {
-            if (verbose) println("SKIP config: ${gate.reason}")
-            continue
-        }
-
-        val fullKeys =
-            EventStudyAnalyzer.runAndGetTopFullKeysByLift(trainCandles, breakoutGroups, cfg)
-        if (fullKeys.isEmpty()) {
-            if (verbose) println("No patterns returned. Skipping.")
-            continue
-        }
-
-        val trainRows = SignalBacktester.runPatternBacktests(
-            candlesRaw = trainCandles,
-            patterns = fullKeys,
-            cfg = cfg,
-            useRuleGate = true,
-            preferSeqOnly = true,
-            orderBookSnapshots = if (cfg.orderBook.enabled) orderBookSnapshots else null,
-            printReport = verbose
-        )
-
-        if (trainRows.isEmpty()) {
-            if (verbose) println("Backtester returned 0 rows.")
-            continue
-        }
-
-        val candidates = trainRows
-            .asSequence()
-            .filter { it.trades >= minTradesFloor }
-            .mapNotNull { r ->
-                val valRow = runSinglePattern(
-                    valCandles,
-                    cfg,
-                    r.pattern,
-                    orderBookSnapshots
-                ) ?: return@mapNotNull null
-                val testRow = runSinglePattern(
-                    testCandles,
-                    cfg,
-                    r.pattern,
-                    orderBookSnapshots
-                ) ?: return@mapNotNull null
-
-                if (valRow.trades < oosMinTrades || testRow.trades < oosMinTrades) return@mapNotNull null
-                if (valRow.compNet < oosMinComp || testRow.compNet < oosMinComp) return@mapNotNull null
-                if (valRow.medNet < oosMinMed || testRow.medNet < oosMinMed) return@mapNotNull null
-
-                Candidate(
+    val allResults = runBlocking {
+        val dispatcher = Dispatchers.Default.limitedParallelism(parallelism)
+        val scope = CoroutineScope(dispatcher)
+        val jobs = configs.mapIndexed { idx, cfg ->
+            scope.async {
+                evaluateConfig(
                     cfg = cfg,
-                    pattern = r.pattern,
-                    train = r,
-                    validation = valRow,
-                    test = testRow
+                    index = idx,
+                    total = configs.size,
+                    trainCandles = trainCandles,
+                    valCandles = valCandles,
+                    testCandles = testCandles,
+                    orderBookSnapshots = orderBookSnapshots,
+                    enforceOos = enforceOos,
+                    verbose = verbose,
+                    minTradesFloor = minTradesFloor,
+                    oosMinTrades = oosMinTrades,
+                    oosMinComp = oosMinComp,
+                    oosMinMed = oosMinMed,
+                    shortlistTopProfitPerConfig = shortlistTopProfitPerConfig,
+                    shortlistTopVolumePerConfig = shortlistTopVolumePerConfig,
+                    shortlistTopStablePerConfig = shortlistTopStablePerConfig
                 )
             }
-            .toList()
-
-        if (candidates.isEmpty()) {
-            if (verbose) println("No candidates after OOS filters.")
-            continue
         }
-
-        val topProfit = candidates
-            .sortedByDescending { oosScore(it) }
-            .take(shortlistTopProfitPerConfig)
-
-        val topVolumeProfitable = candidates
-            .sortedByDescending { it.test.trades }
-            .take(shortlistTopVolumePerConfig)
-
-        val topStableProfitable = candidates
-            .filter { it.test.medNet > 0.0 }
-            .sortedWith(compareByDescending<Candidate> { oosScore(it) }.thenByDescending { it.test.trades })
-            .take(shortlistTopStablePerConfig)
-
-        val shortlisted = topProfit + topVolumeProfitable + topStableProfitable
-        for (c in shortlisted) {
-            val k = keyOf(c.cfg, c.pattern)
-            val prev = candidateMap[k]
-            if (prev == null || oosScore(c) > oosScore(prev)) {
-                candidateMap[k] = c
-            }
-        }
-
-        if (verbose) {
-            println(
-                "Shortlisted this config: " +
-                        "profit=${topProfit.size}, " +
-                        "volume=${topVolumeProfitable.size}, " +
-                        "stable=${topStableProfitable.size} " +
-                        " | globalUnique=${candidateMap.size}"
-            )
-        }
+        jobs.awaitAll()
     }
 
-    val allCandidates = candidateMap.values.toList()
+    val bestTrainRows = allResults.flatMap { it.bestTrainRows }
+    val allCandidates = allResults.flatMap { it.candidates }
     println("\n============================================================")
     println("GLOBAL CANDIDATES: ${allCandidates.size}")
     println("============================================================")
 
     if (allCandidates.isEmpty()) {
         println("No candidates found. Try lowering RuleGate strictness or reducing minTradesFloor.")
+        printTopTrainRows(bestTrainRows, "Top raw train configs")
         return
     }
 
@@ -342,7 +276,9 @@ fun main(args: Array<String>) {
             .sortedByDescending { balancedScore(it) }
             .filter { !selected.containsKey(keyOf(it.cfg, it.pattern)) }
             .take(targetBotCount - selected.size)
-            .forEach { selected[keyOf(it.cfg, it.pattern)] = it }
+            .forEach { candidate ->
+                selected[keyOf(candidate.cfg, candidate.pattern)] = candidate
+            }
     }
 
     val finalSelected = selected.values.take(targetBotCount)
@@ -378,6 +314,8 @@ fun main(args: Array<String>) {
             topNPerConfig = 3
         )
     )
+
+    printTopTrainRows(bestTrainRows, "Top raw train configs")
 
     val botSpecs = allProfitBots.map { row ->
         BotSpec(
@@ -466,4 +404,159 @@ private fun runSinglePattern(
         printReport = false
     )
     return rows.firstOrNull()
+}
+
+private fun keyOf(cfg: AlgoConfig, pattern: String): String = "${cfg.id()}||$pattern"
+
+private fun oosScore(c: Candidate): Double = min(c.validation.compNet, c.test.compNet)
+
+private fun evaluateConfig(
+    cfg: AlgoConfig,
+    index: Int,
+    total: Int,
+    trainCandles: List<Candle>,
+    valCandles: List<Candle>,
+    testCandles: List<Candle>,
+    orderBookSnapshots: List<OrderBookSnapshot>,
+    enforceOos: Boolean,
+    verbose: Boolean,
+    minTradesFloor: Int,
+    oosMinTrades: Int,
+    oosMinComp: Double,
+    oosMinMed: Double,
+    shortlistTopProfitPerConfig: Int,
+    shortlistTopVolumePerConfig: Int,
+    shortlistTopStablePerConfig: Int
+): ConfigResult {
+    val localCandidates = LinkedHashMap<String, Candidate>()
+    val localBestRows = mutableListOf<SignalBacktester.PatternBacktestRow>()
+
+    fun addLocalCandidate(candidate: Candidate) {
+        val key = keyOf(candidate.cfg, candidate.pattern)
+        val prev = localCandidates[key]
+        if (prev == null || oosScore(candidate) > oosScore(prev)) {
+            localCandidates[key] = candidate
+        }
+    }
+
+    fun recordBest(row: SignalBacktester.PatternBacktestRow) {
+        localBestRows += row
+        localBestRows.sortByDescending { it.compNet }
+        if (localBestRows.size > 10) localBestRows.removeLast()
+    }
+
+    if (verbose && index % 50 == 0) {
+        println("\n============================================================")
+        println("RUN #${index + 1}/$total: ${cfg.id()}")
+        println("============================================================")
+    }
+
+    val finder = HistoricProfitGroupFinder(trainCandles)
+    val breakoutGroups = finder.findAndReport(cfg)
+
+    val gate = ProfitGroupQualityGate.decide(cfg, breakoutGroups)
+    if (!gate.proceed) {
+        if (verbose) println("SKIP config: ${gate.reason}")
+        return ConfigResult(emptyList(), localBestRows)
+    }
+
+    val fullKeys =
+        EventStudyAnalyzer.runAndGetTopFullKeysByLift(trainCandles, breakoutGroups, cfg)
+    if (fullKeys.isEmpty()) {
+        if (verbose) println("No patterns returned. Skipping.")
+        return ConfigResult(emptyList(), localBestRows)
+    }
+
+    val trainRows = SignalBacktester.runPatternBacktests(
+        candlesRaw = trainCandles,
+        patterns = fullKeys,
+        cfg = cfg,
+        useRuleGate = true,
+        preferSeqOnly = true,
+        orderBookSnapshots = if (cfg.orderBook.enabled) orderBookSnapshots else null,
+        printReport = verbose
+    )
+
+    if (trainRows.isEmpty()) {
+        if (verbose) println("Backtester returned 0 rows.")
+        return ConfigResult(emptyList(), localBestRows)
+    }
+
+    trainRows.forEach { recordBest(it) }
+
+    val candidates = trainRows
+        .asSequence()
+        .filter { it.trades >= minTradesFloor }
+        .mapNotNull { r ->
+            val valRow = if (enforceOos) {
+                runSinglePattern(valCandles, cfg, r.pattern, orderBookSnapshots)
+            } else {
+                r
+            } ?: return@mapNotNull null
+
+            val testRow = if (enforceOos) {
+                runSinglePattern(testCandles, cfg, r.pattern, orderBookSnapshots)
+            } else {
+                r
+            } ?: return@mapNotNull null
+
+            if (enforceOos) {
+                if (valRow.trades < oosMinTrades || testRow.trades < oosMinTrades) return@mapNotNull null
+                if (valRow.compNet < oosMinComp || testRow.compNet < oosMinComp) return@mapNotNull null
+                if (valRow.medNet < oosMinMed || testRow.medNet < oosMinMed) return@mapNotNull null
+            }
+
+            Candidate(
+                cfg = cfg,
+                pattern = r.pattern,
+                train = r,
+                validation = valRow,
+                test = testRow
+            )
+        }
+        .toList()
+
+    if (candidates.isEmpty()) {
+        if (verbose) println("No candidates after OOS filters.")
+        return ConfigResult(emptyList(), localBestRows)
+    }
+
+    val topProfit = candidates
+        .sortedByDescending { oosScore(it) }
+        .take(shortlistTopProfitPerConfig)
+
+    val topVolumeProfitable = candidates
+        .sortedByDescending { it.test.trades }
+        .take(shortlistTopVolumePerConfig)
+
+    val topStableProfitable = candidates
+        .filter { it.test.medNet > 0.0 }
+        .sortedWith(compareByDescending<Candidate> { oosScore(it) }.thenByDescending { it.test.trades })
+        .take(shortlistTopStablePerConfig)
+
+    (topProfit + topVolumeProfitable + topStableProfitable).forEach { addLocalCandidate(it) }
+
+    if (verbose) {
+        println(
+            "Shortlisted this config: " +
+                    "profit=${topProfit.size}, " +
+                    "volume=${topVolumeProfitable.size}, " +
+                    "stable=${topStableProfitable.size} " +
+                    " | localUnique=${localCandidates.size}"
+        )
+    }
+
+    return ConfigResult(localCandidates.values.toList(), localBestRows)
+}
+
+private fun printTopTrainRows(rows: List<SignalBacktester.PatternBacktestRow>, title: String) {
+    if (rows.isEmpty()) return
+    println("\n$title (${rows.size} tracked rows)")
+    rows.sortedByDescending { it.compNet }.take(5).forEachIndexed { idx, r ->
+        println(
+            "${(idx + 1).toString().padStart(2)} " +
+                    "pattern=${r.pattern} compNet=${"%.4f".format(r.compNet)} " +
+                    "medNet=${"%.4f".format(r.medNet)} trades=${r.trades}"
+        )
+    }
 }

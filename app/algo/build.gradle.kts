@@ -16,5 +16,6 @@ dependencies {
     implementation(project(":app:historicaldata"))
     implementation(libs.json)
     implementation(libs.json.jsr310)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     testImplementation(kotlin("test"))
 }
