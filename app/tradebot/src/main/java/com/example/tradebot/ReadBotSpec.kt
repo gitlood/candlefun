@@ -38,7 +38,7 @@ fun printBotRoster(bots: List<BotSpec>) {
 
     bots.forEach { bot ->
         println("Name        : ${bot.name}")
-        println("Symbol      : ${bot.trade.symbol} | Mode: ${bot.trade.mode} | MaxPos: ${bot.trade.maxOpenPositions}")
+        println("Symbol      : ${bot.trade.symbol} | Interval: ${bot.trade.candleInterval} | Mode: ${bot.trade.mode} | MaxPos: ${bot.trade.maxOpenPositions}")
         println("Patterns    : ${bot.patterns.joinToString(", ")}")
         println("TP / SL     : ${bot.cfg.backtest.takeProfit * 100}% / ${bot.cfg.backtest.stopLoss * 100}%")
         println("Lookback    : ${bot.cfg.backtest.lookbackMinutes} min | Horizon: ${bot.cfg.backtest.horizonMinutes} min")

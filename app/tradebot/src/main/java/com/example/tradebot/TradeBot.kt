@@ -4,6 +4,7 @@ import com.example.network.interfaces.BinanceTestNetApiService
 import com.example.platformutil.model.BotSpec
 import com.example.platformutil.model.Candle
 import com.example.platformutil.model.ExecutionMode
+import com.example.platformutil.model.OrderBookSnapshot
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -37,7 +38,7 @@ class TradeBot(
 
     private var printedInit = false
 
-    suspend fun onCandles(candlesRaw: List<Candle>) {
+    suspend fun onCandles(candlesRaw: List<Candle>, orderBookSnapshot: OrderBookSnapshot? = null) {
         if (candlesRaw.isEmpty()) return
 
         val sorted = candlesRaw.sortedBy { it.openTime }
@@ -47,14 +48,14 @@ class TradeBot(
         if (latest.openTime <= lastProcessedOpenTime) return
         lastProcessedOpenTime = latest.openTime
 
-        val intervalMillis = inferIntervalMillis(sorted)
+        val intervalMillis = TradeBotMath.inferIntervalMillis(sorted)
 
         if (!printedInit) {
             log("INIT patterns.size=${patterns.size} sample=${patterns.take(8)}")
             printedInit = true
         }
 
-        val lookbackBars = barsFromMinutes(cfg.backtest.lookbackMinutes, intervalMillis)
+        val lookbackBars = TradeBotMath.barsFromMinutes(cfg.backtest.lookbackMinutes, intervalMillis)
         val patternBars = cfg.eventStudy.patternBars
         val requiredBars = max(lookbackBars, patternBars).coerceAtLeast(2)
 
@@ -75,7 +76,8 @@ class TradeBot(
             lookbackBars = lookbackBars.coerceAtMost(recentCandles.size),
             patternBars = patternBars.coerceAtMost(recentCandles.size),
             intervalMillis = intervalMillis,
-            currentTime = latest.openTime
+            currentTime = latest.openTime,
+            orderBookSnapshot = orderBookSnapshot
         )
     }
 
@@ -114,7 +116,8 @@ class TradeBot(
         lookbackBars: Int,
         patternBars: Int,
         intervalMillis: Long,
-        currentTime: Long
+        currentTime: Long,
+        orderBookSnapshot: OrderBookSnapshot?
     ) {
         if (openPositions.size >= spec.trade.maxOpenPositions) {
             log("Max open positions reached (${openPositions.size}). Skipping entry.")
@@ -147,7 +150,10 @@ class TradeBot(
         log("Pattern key -> ${keys.seqWithLast}")
         log("Pattern match -> ${if (matched) "MATCH ✅" else "NO MATCH ❌"}")
 
-        if (!matched || !gate.ok) return
+        val orderBookOk = passesOrderBookGate(orderBookSnapshot)
+        log("OrderBook Gate -> ${if (orderBookOk) "PASS ✅" else "FAIL ❌"}")
+
+        if (!matched || !gate.ok || !orderBookOk) return
 
         val fillPrice = if (spec.trade.mode == ExecutionMode.TESTNET) {
             val resp = api.createOrder(spec.trade.symbol, "BUY", "MARKET", spec.trade.quantity, null, null)
@@ -284,7 +290,7 @@ class TradeBot(
         val vols = DoubleArray(lb) { i -> d(candles[start + i].volume) ?: 0.0 }
 
         // --- ret30m on actual interval ---
-        val b30 = barsFromMinutes(30, intervalMillis)
+        val b30 = TradeBotMath.barsFromMinutes(30, intervalMillis)
         val ret30m = if (lb > b30 && b30 >= 1) {
             val a = closes[lb - 1 - b30]
             val b = closes[lb - 1]
@@ -337,17 +343,18 @@ class TradeBot(
         return sqrt(max(0.0, ss / a.size))
     }
 
-    private fun barsFromMinutes(minutes: Int, intervalMillis: Long): Int {
-        val m = minutes.coerceAtLeast(1)
-        val ms = intervalMillis.coerceAtLeast(1L)
-        return ((m * 60_000L) / ms).toInt().coerceAtLeast(1)
-    }
+    private fun passesOrderBookGate(snapshot: OrderBookSnapshot?): Boolean {
+        val ob = cfg.orderBook
+        if (!ob.enabled) return true
+        if (snapshot == null) {
+            log("OrderBook Gate -> missing snapshot")
+            return false
+        }
 
-    private fun inferIntervalMillis(sortedCandles: List<Candle>): Long {
-        if (sortedCandles.size < 2) return 300_000L // 5m default
-        val diffs = sortedCandles.zipWithNext { a, b -> b.openTime - a.openTime }.filter { it > 0 }
-        if (diffs.isEmpty()) return 300_000L
-        return diffs.sorted()[diffs.size / 2] // median
+        val spreadBps = if (snapshot.midPrice > 0.0) (snapshot.spread / snapshot.midPrice) * 10_000.0 else Double.POSITIVE_INFINITY
+        val spreadOk = spreadBps <= ob.maxSpreadBps
+        val imbalanceOk = snapshot.imbalance10 >= ob.minImbalance10
+        return spreadOk && imbalanceOk
     }
 
     private fun com.example.network.model.TradeResponse.bestEffortPrice(): Double? {

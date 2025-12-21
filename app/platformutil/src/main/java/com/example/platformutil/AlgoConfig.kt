@@ -17,6 +17,7 @@ data class ProfitGroupConfig(
 
     /** Console/reporting */
     val maxGroupsToPrint: Int = Int.MAX_VALUE,
+    val printReport: Boolean = true,
     val zoneId: ZoneId = ZoneId.systemDefault(),
 ) {
     override fun equals(other: Any?): Boolean {
@@ -30,6 +31,7 @@ data class ProfitGroupConfig(
         if (requireContinuous != other.requireContinuous) return false
         if (dedupeOverlapping != other.dedupeOverlapping) return false
         if (maxGroupsToPrint != other.maxGroupsToPrint) return false
+        if (printReport != other.printReport) return false
         if (!thresholds.contentEquals(other.thresholds)) return false
         if (sortBy != other.sortBy) return false
         if (zoneId != other.zoneId) return false
@@ -43,6 +45,7 @@ data class ProfitGroupConfig(
         result = 31 * result + requireContinuous.hashCode()
         result = 31 * result + dedupeOverlapping.hashCode()
         result = 31 * result + maxGroupsToPrint
+        result = 31 * result + printReport.hashCode()
         result = 31 * result + thresholds.contentHashCode()
         result = 31 * result + sortBy.hashCode()
         result = 31 * result + zoneId.hashCode()
@@ -95,6 +98,9 @@ data class EventStudyConfig(
     val minPosEventsToRun: Int = 10,
     val minNegSamplesToRun: Int = 500,
     val minDistinctFullKeysToRun: Int = 30,
+
+    /** Console/reporting */
+    val printReport: Boolean = true,
 )
 
 // ========================= SIGNAL CONFIG =========================
@@ -124,17 +130,26 @@ data class SignalConfig(
     val trendSlopeMin: Double = 0.0,
 )
 
+// ========================= ORDER BOOK CONFIG =========================
+data class OrderBookSignalConfig(
+    val enabled: Boolean = false,
+    val minImbalance10: Double = 0.05,
+    val maxSpreadBps: Double = 15.0,
+)
+
 // ========================= ALGO CONFIG =========================
 data class AlgoConfig(
     val profitGroup: ProfitGroupConfig = ProfitGroupConfig(),
     val backtest: BacktestConfig = BacktestConfig(),
     val eventStudy: EventStudyConfig = EventStudyConfig(),
     val signal: SignalConfig = SignalConfig(),
+    val orderBook: OrderBookSignalConfig = OrderBookSignalConfig(),
 ) {
     fun id(): String =
         "TP=${pct(backtest.takeProfit)} SL=${pct(backtest.stopLoss)} HZ=${backtest.horizonMinutes}m " +
                 "DD=${pct(profitGroup.maxDrawdownAllowed)} LL=${profitGroup.localLowLookbackMinutes}m " +
-                "SG(ret30=${pct(signal.ret30mMin)} volZ>=${fmt(signal.volumeZMin)} contr<=${fmt(signal.contractionMax)} slope>=${fmt(signal.trendSlopeMin)})"
+                "SG(ret30=${pct(signal.ret30mMin)} volZ>=${fmt(signal.volumeZMin)} contr<=${fmt(signal.contractionMax)} slope>=${fmt(signal.trendSlopeMin)}) " +
+                "OB(en=${orderBook.enabled} imb10>=${fmt(orderBook.minImbalance10)} spr<=${fmt(orderBook.maxSpreadBps)})"
 
     private fun pct(x: Double): String = "%.2f%%".format(x * 100.0)
     private fun fmt(x: Double): String = "%.2f".format(x)

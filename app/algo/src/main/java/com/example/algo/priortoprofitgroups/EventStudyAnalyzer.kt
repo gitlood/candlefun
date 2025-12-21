@@ -146,7 +146,7 @@ object EventStudyAnalyzer {
             topK = eventCfg.topK,
             minPosCount = eventCfg.minPosCount,
             maxNegatives = eventCfg.maxNegatives,
-            shouldPrint = true,
+            shouldPrint = eventCfg.printReport,
             minNegSamplesToRun = eventCfg.minNegSamplesToRun,
             minPosEventsToRun = eventCfg.minPosEventsToRun,
             minDistinctFullKeysToRun = eventCfg.minDistinctFullKeysToRun

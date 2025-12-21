@@ -5,6 +5,7 @@ import com.example.platformutil.BINANCE_SYMBOL
 
 data class TradingConfig(
     val symbol: String = BINANCE_SYMBOL,
+    val candleInterval: String = "5m",
     val quantity: String = "0.01",
     val maxOpenPositions: Int = 1,
     val mode: ExecutionMode = ExecutionMode.TESTNET,

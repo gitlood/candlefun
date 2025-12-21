@@ -17,12 +17,17 @@ interface HistoricalDataRepository {
      */
     fun getAllCandles(): List<Candle>
 
+    /**
+     * Retrieves the most recent candles, ordered by openTime ascending.
+     */
+    fun getRecentCandles(limit: Int): List<Candle>
+
     companion object {
         /**
          * Creates a new instance of the repository and handles database connection.
          */
-        fun create(): HistoricalDataRepository {
-            Database.connect("jdbc:sqlite:binance.db", "org.sqlite.JDBC")
+        fun create(dbPath: String = "binance.db"): HistoricalDataRepository {
+            Database.connect("jdbc:sqlite:$dbPath", "org.sqlite.JDBC")
             return HistoricalDataRepositoryImpl()
         }
     }
@@ -36,6 +41,18 @@ internal class HistoricalDataRepositoryImpl : HistoricalDataRepository,
     override fun getAllCandles(): List<Candle> {
         return transaction {
             Candles.selectAll().map { toCandle(it) }
+        }
+    }
+
+    override fun getRecentCandles(limit: Int): List<Candle> {
+        if (limit <= 0) return emptyList()
+        return transaction {
+            Candles
+                .selectAll()
+                .orderBy(Candles.openTime, org.jetbrains.exposed.sql.SortOrder.DESC)
+                .limit(limit)
+                .map { toCandle(it) }
+                .reversed()
         }
     }
 }

@@ -11,6 +11,7 @@ dependencies {
 
     // Test dependencies
     testImplementation("io.ktor:ktor-client-mock:2.3.11")
+    testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
     testImplementation("io.mockk:mockk:1.13.10")
     testImplementation("org.mockito.kotlin:mockito-kotlin:4.1.0")

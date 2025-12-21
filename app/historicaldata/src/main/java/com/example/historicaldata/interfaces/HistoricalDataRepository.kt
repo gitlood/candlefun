@@ -12,4 +12,9 @@ interface HistoricalDataRepository {
      * @return A list of all [Candle] objects.
      */
     fun getAllCandles(): List<Candle>
+
+    /**
+     * Retrieves the most recent candles, ordered by openTime ascending.
+     */
+    fun getRecentCandles(limit: Int): List<Candle>
 }

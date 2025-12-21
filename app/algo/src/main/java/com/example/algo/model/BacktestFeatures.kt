@@ -8,5 +8,8 @@ data class BacktestFeatures(
     val volumeZ: Double,
     val ret5m: Double,
     val ret15m: Double,
-    val ret30m: Double
+    val ret30m: Double,
+    val orderBookImbalance10: Double? = null,
+    val orderBookSpreadBps: Double? = null,
+    val orderBookAvailable: Boolean = false
 )

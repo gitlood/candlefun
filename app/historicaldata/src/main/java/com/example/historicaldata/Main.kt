@@ -1,8 +1,12 @@
 package com.example.historicaldata
 
 import com.example.historicaldata.interfaces.CandleRepository
-import com.example.network.interfaces.BinanceApiService
 import com.example.historicaldata.util.CandleDataOrchestrator
+import com.example.network.interfaces.BinanceApiService
+import com.example.platformutil.CandleJob
+import com.example.platformutil.DEFAULT_INTERVALS
+import com.example.platformutil.DEFAULT_SYMBOLS
+import com.example.platformutil.candleDbPath
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -10,10 +14,16 @@ import org.jetbrains.exposed.sql.transactions.transaction
 /**
  * The main entry point for running the historical data update process independently.
  */
-fun main() {
+fun main(args: Array<String>) {
+    if (args.contains("--mode=orderbook")) {
+        val filtered = args.filterNot { it == "--mode=orderbook" }.toTypedArray()
+        runOrderBookCollector(filtered)
+        return
+    }
+
     while (true) {
         try {
-            runHistoricalDataUpdate()
+            runHistoricalDataUpdate(defaultCandleJobs())
         } catch (e: Exception) {
             println("An unexpected error occurred:")
             e.printStackTrace()
@@ -29,25 +39,40 @@ fun main() {
  * Connects to the database, updates candle data from the API, and pushes a statistics report.
  * This is the primary public function for an external coordinator to call.
  */
-fun runHistoricalDataUpdate() {
+fun runHistoricalDataUpdate(jobs: List<CandleJob>) {
     println("=== Historical Data Task Started ===")
 
     // 1. Initialize dependencies
     val binanceApiService = BinanceApiService.create()
     val candleRepository: CandleRepository = CandleRepositoryImpl()
-    // If apiKey is missing, you might want to handle it inside CandleDataOrchestrator or pass a dummy/empty one if allowed
-    val orchestrator = CandleDataOrchestrator(binanceApiService, candleRepository)
 
-    // 2. Connect to the database and create tables
-    Database.connect("jdbc:sqlite:binance.db", "org.sqlite.JDBC")
-    transaction {
-        SchemaUtils.create(Candles)
+    for (job in jobs) {
+        println("Updating ${job.symbol} ${job.interval} -> ${job.dbPath}")
+
+        // 2. Connect to the database and create tables
+        Database.connect("jdbc:sqlite:${job.dbPath}", "org.sqlite.JDBC")
+        transaction {
+            SchemaUtils.create(Candles)
+        }
+
+        // 3. Update candles from the API
+        val orchestrator = CandleDataOrchestrator(
+            binanceApiService = binanceApiService,
+            candleRepository = candleRepository,
+            symbol = job.symbol,
+            interval = job.interval
+        )
+        orchestrator.updateCandles()
+        println("Candle update complete for ${job.symbol} ${job.interval}.")
     }
 
-    // 3. Update candles from the API
-    println("Updating candles from Binance API...")
-    orchestrator.updateCandles()
-    println("Candle update complete.")
-
     println("=== Historical Data Task Finished ===")
+}
+
+private fun defaultCandleJobs(): List<CandleJob> {
+    return DEFAULT_SYMBOLS.flatMap { symbol ->
+        DEFAULT_INTERVALS.map { interval ->
+            CandleJob(symbol, interval, candleDbPath(symbol, interval))
+        }
+    }
 }

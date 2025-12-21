@@ -2,7 +2,6 @@ package com.example.historicaldata.util
 
 import com.example.historicaldata.interfaces.CandleRepository
 import com.example.network.interfaces.BinanceApiService
-import com.example.platformutil.BINANCE_SYMBOL
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
@@ -10,6 +9,8 @@ import kotlin.math.min
 class CandleDataOrchestrator(
     private val binanceApiService: BinanceApiService,
     private val candleRepository: CandleRepository,
+    private val symbol: String,
+    private val interval: String
 ) {
 
     fun updateCandles() = runBlocking {
@@ -28,7 +29,7 @@ class CandleDataOrchestrator(
 
     private fun backfillHistoricalData() = runBlocking {
         val nineMonthsAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(270)
-        val candleMs = TimeUnit.MINUTES.toMillis(5)
+        val candleMs = com.example.platformutil.intervalToMillis(interval)
         val candlesPerRequest = 1000
 
         var cursor = nineMonthsAgo
@@ -44,7 +45,8 @@ class CandleDataOrchestrator(
             )
 
             val klines = binanceApiService.getKlines(
-                symbol = BINANCE_SYMBOL,
+                symbol = symbol,
+                interval = interval,
                 limit = candlesPerRequest,
                 startTime = cursor,
                 endTime = endTime
@@ -74,8 +76,8 @@ class CandleDataOrchestrator(
         if (lastOpenTime != null) {
             println("Fetching latest candles since last update...")
             val klines = binanceApiService.getKlines(
-                symbol = BINANCE_SYMBOL,
-             //   apiKey = apiKey,
+                symbol = symbol,
+                interval = interval,
                 startTime = lastOpenTime
             )
 

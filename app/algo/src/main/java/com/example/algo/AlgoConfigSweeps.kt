@@ -57,6 +57,11 @@ object AlgoConfigSweeps {
         contractionMaxes: List<Double> = listOf(1.05, 1.10, 1.20),
         trendSlopeMins: List<Double> = listOf(0.0),
 
+        // Order book gate knobs
+        orderBookEnableds: List<Boolean> = listOf(false),
+        orderBookMinImbalance10s: List<Double> = listOf(0.05),
+        orderBookMaxSpreadBps: List<Double> = listOf(15.0),
+
         constraints: SweepConstraints = SweepConstraints()
     ): Sequence<AlgoConfig> = sequence {
 
@@ -95,7 +100,10 @@ object AlgoConfigSweeps {
                                     for (r30 in ret30mMins)
                                         for (vz in volumeZMins)
                                             for (cx in contractionMaxes)
-                                                for (slope in trendSlopeMins) {
+                                                for (slope in trendSlopeMins)
+                                                    for (obEnabled in orderBookEnableds)
+                                                        for (obImb in orderBookMinImbalance10s)
+                                                            for (obSpr in orderBookMaxSpreadBps) {
 
                                                     if (!isSane(tp, sl, hz)) continue
 
@@ -122,6 +130,11 @@ object AlgoConfigSweeps {
                                                                 volumeZMin = vz,
                                                                 contractionMax = cx,
                                                                 trendSlopeMin = slope
+                                                            ),
+                                                            orderBook = base.orderBook.copy(
+                                                                enabled = obEnabled,
+                                                                minImbalance10 = obImb,
+                                                                maxSpreadBps = obSpr
                                                             )
                                                         )
                                                     )

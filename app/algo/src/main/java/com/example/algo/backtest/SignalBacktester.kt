@@ -4,9 +4,11 @@ import com.example.platformutil.AlgoConfig
 import com.example.platformutil.BacktestConfig
 import com.example.platformutil.EventStudyConfig
 import com.example.platformutil.ProfitGroupConfig
+import com.example.platformutil.OrderBookSignalConfig
 import com.example.platformutil.SignalConfig
 import com.example.algo.model.BacktestFeatures
 import com.example.platformutil.model.Candle
+import com.example.platformutil.model.OrderBookSnapshot
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -16,7 +18,11 @@ object SignalBacktester {
 
     // ---------------- Rule-gated signal backtest ----------------
 
-    private fun shouldEnter(f: BacktestFeatures, r: SignalConfig): Boolean {
+    private fun shouldEnter(
+        f: BacktestFeatures,
+        r: SignalConfig,
+        orderBook: OrderBookSignalConfig
+    ): Boolean {
         // Don’t long deep dumps
         if (f.ret30m < r.ret30mMin) return false
 
@@ -28,6 +34,14 @@ object SignalBacktester {
 
         // Optional trend filter
         if (f.trendSlope < r.trendSlopeMin) return false
+
+        if (orderBook.enabled) {
+            if (!f.orderBookAvailable) return false
+            val spreadBps = f.orderBookSpreadBps ?: Double.POSITIVE_INFINITY
+            val imbalance = f.orderBookImbalance10 ?: Double.NEGATIVE_INFINITY
+            if (spreadBps > orderBook.maxSpreadBps) return false
+            if (imbalance < orderBook.minImbalance10) return false
+        }
 
         return true
     }
@@ -76,6 +90,8 @@ object SignalBacktester {
         timingMode: TimingMode = TimingMode.TRADABLE_NEXT_OPEN,
         entryPriceMode: EntryPriceMode = EntryPriceMode.ENTRY_CANDLE_OPEN,
         useRuleGate: Boolean = true,
+        orderBookSnapshots: List<OrderBookSnapshot>? = null,
+        printReport: Boolean = true,
         /**
          * IMPORTANT:
          * true  = prefer broad matches (seq-only first)
@@ -96,12 +112,15 @@ object SignalBacktester {
         patterns = patterns,
         backtestConfig = cfg.backtest,
         signalConfig = cfg.signal,
+        orderBookConfig = cfg.orderBook,
         eventStudyConfig = cfg.eventStudy,
         profitGroupConfig = cfg.profitGroup,
         intervalMillisOverride = intervalMillisOverride,
         timingMode = timingMode,
         entryPriceMode = entryPriceMode,
         useRuleGate = useRuleGate,
+        orderBookSnapshots = orderBookSnapshots,
+        printReport = printReport,
         preferSeqOnly = preferSeqOnly,
         useBreakoutConfirm = useBreakoutConfirm,
         breakoutLookaheadMinutes = breakoutLookaheadMinutes,
@@ -230,12 +249,15 @@ object SignalBacktester {
         patterns: List<String>,
         backtestConfig: BacktestConfig,
         signalConfig: SignalConfig,
+        orderBookConfig: OrderBookSignalConfig,
         eventStudyConfig: EventStudyConfig,
         profitGroupConfig: ProfitGroupConfig,
         intervalMillisOverride: Long? = null,
         timingMode: TimingMode = TimingMode.TRADABLE_NEXT_OPEN,
         entryPriceMode: EntryPriceMode = EntryPriceMode.ENTRY_CANDLE_OPEN,
         useRuleGate: Boolean = true,
+        orderBookSnapshots: List<OrderBookSnapshot>? = null,
+        printReport: Boolean = true,
         preferSeqOnly: Boolean = false,
 
         useBreakoutConfirm: Boolean = true,
@@ -246,13 +268,16 @@ object SignalBacktester {
         ignoreCosts: Boolean = false
     ): List<PatternBacktestRow> {
         if (candlesRaw.isEmpty() || patterns.isEmpty()) {
-            println("PatternBacktest: nothing to do (candles=${candlesRaw.size}, patterns=${patterns.size})")
+            if (printReport) {
+                println("PatternBacktest: nothing to do (candles=${candlesRaw.size}, patterns=${patterns.size})")
+            }
             return emptyList()
         }
 
         val candles = candlesRaw.sortedBy { it.openTime }
         val intervalMillis = intervalMillisOverride ?: inferIntervalMillis(candles)
-        val series = CandleSeries.from(candles, intervalMillis)
+        val orderBookSeries = buildOrderBookSeries(candles, orderBookSnapshots)
+        val series = CandleSeries.from(candles, intervalMillis, orderBookSeries)
 
         val horizonBars = barsFromMinutes(backtestConfig.horizonMinutes, intervalMillis)
         val localLowLookbackBars =
@@ -275,7 +300,9 @@ object SignalBacktester {
         }
 
         if (queriesBySeq.isEmpty()) {
-            println("PatternBacktest: no usable patterns after normalization (patterns=${patterns.size})")
+            if (printReport) {
+                println("PatternBacktest: no usable patterns after normalization (patterns=${patterns.size})")
+            }
             return emptyList()
         }
 
@@ -346,44 +373,46 @@ object SignalBacktester {
 
             if (useRuleGate) {
                 val f = series.featuresAt(entryIndex, ruleLookbackBars) ?: continue
-                if (!shouldEnter(f, signalConfig)) continue
+                if (!shouldEnter(f, signalConfig, orderBookConfig)) continue
             }
 
             indicesByPattern.getOrPut(matchKey) { IntArrayList() }.add(entryIndex)
         }
 
-        println("============================================================")
-        println("=== Pattern Backtest (config-driven, sweep-compatible) ===")
-        println("Candles: ${series.n} | Interval: ${intervalMillis / 1000}s")
-        println("Timing: $timingMode | EntryPriceMode: $entryPriceMode | preferSeqOnly=$preferSeqOnly")
-        println("RuleGate: $useRuleGate (lookback=${backtestConfig.lookbackMinutes}m)")
-        if (useRuleGate) {
+        if (printReport) {
+            println("============================================================")
+            println("=== Pattern Backtest (config-driven, sweep-compatible) ===")
+            println("Candles: ${series.n} | Interval: ${intervalMillis / 1000}s")
+            println("Timing: $timingMode | EntryPriceMode: $entryPriceMode | preferSeqOnly=$preferSeqOnly")
+            println("RuleGate: $useRuleGate (lookback=${backtestConfig.lookbackMinutes}m)")
+            if (useRuleGate) {
+                println(
+                    "Gate: ret30m>=${pct(signalConfig.ret30mMin)}  " +
+                            "volZ>=${fmt(signalConfig.volumeZMin)}  " +
+                            "contr<=${fmt(signalConfig.contractionMax)}  " +
+                            "slope>=${fmt(signalConfig.trendSlopeMin)}"
+                )
+            }
+            println("LocalLow lookback: ${profitGroupConfig.localLowLookbackMinutes}m (${localLowLookbackBars} bars)")
+            println("Horizon: ${backtestConfig.horizonMinutes}m (${horizonBars} bars)")
             println(
-                "Gate: ret30m>=${pct(signalConfig.ret30mMin)}  " +
-                        "volZ>=${fmt(signalConfig.volumeZMin)}  " +
-                        "contr<=${fmt(signalConfig.contractionMax)}  " +
-                        "slope>=${fmt(signalConfig.trendSlopeMin)}"
+                "TP=${fmt(tpPctToTest)}% | SL stop: ${fmt(stopLossPct)}% " +
+                        (if (maxDrawdownPctAllowed > 0.0) "| MaxDD cap: ${fmt(maxDrawdownPctAllowed)}%" else "")
             )
+            println(
+                "BreakoutConfirm: $useBreakoutConfirm " +
+                        "(lookahead=${breakoutLookaheadMinutes}m/${breakoutLookaheadBars} bars, " +
+                        "buffer=${pct(breakoutBufferPct)}, closeAbove=$breakoutRequireCloseAbove)"
+            )
+            val feeUsed = if (ignoreCosts) 0.0 else backtestConfig.feePerSide
+            val slipUsed = if (ignoreCosts) 0.0 else backtestConfig.slippagePerSide
+            println("Costs: fee=${pct(feeUsed)} slip=${pct(slipUsed)} per side (ignoreCosts=$ignoreCosts)")
+            println(
+                "Patterns requested: $requestedPatternCount | Unique normalized keys: ${uniqueKeys.size} | " +
+                        "Seq buckets: ${queriesBySeq.size} | Patterns with matches: ${indicesByPattern.size}"
+            )
+            println("============================================================")
         }
-        println("LocalLow lookback: ${profitGroupConfig.localLowLookbackMinutes}m (${localLowLookbackBars} bars)")
-        println("Horizon: ${backtestConfig.horizonMinutes}m (${horizonBars} bars)")
-        println(
-            "TP=${fmt(tpPctToTest)}% | SL stop: ${fmt(stopLossPct)}% " +
-                    (if (maxDrawdownPctAllowed > 0.0) "| MaxDD cap: ${fmt(maxDrawdownPctAllowed)}%" else "")
-        )
-        println(
-            "BreakoutConfirm: $useBreakoutConfirm " +
-                    "(lookahead=${breakoutLookaheadMinutes}m/${breakoutLookaheadBars} bars, " +
-                    "buffer=${pct(breakoutBufferPct)}, closeAbove=$breakoutRequireCloseAbove)"
-        )
-        val feeUsed = if (ignoreCosts) 0.0 else backtestConfig.feePerSide
-        val slipUsed = if (ignoreCosts) 0.0 else backtestConfig.slippagePerSide
-        println("Costs: fee=${pct(feeUsed)} slip=${pct(slipUsed)} per side (ignoreCosts=$ignoreCosts)")
-        println(
-            "Patterns requested: $requestedPatternCount | Unique normalized keys: ${uniqueKeys.size} | " +
-                    "Seq buckets: ${queriesBySeq.size} | Patterns with matches: ${indicesByPattern.size}"
-        )
-        println("============================================================")
 
         return printPatternTableForTp(
             s = series,
@@ -392,12 +421,13 @@ object SignalBacktester {
             horizonBars = horizonBars,
             stopLossPct = stopLossPct,
             maxDrawdownPctAllowed = maxDrawdownPctAllowed,
-            feePerSide = feeUsed,
-            slippagePerSide = slipUsed,
+            feePerSide = if (ignoreCosts) 0.0 else backtestConfig.feePerSide,
+            slippagePerSide = if (ignoreCosts) 0.0 else backtestConfig.slippagePerSide,
             timingMode = timingMode,
             entryPriceMode = entryPriceMode,
             allowOverlappingTrades = backtestConfig.allowOverlappingTrades,
-            worstCaseIfBothHitSameCandle = backtestConfig.worstCaseIfBothHit
+            worstCaseIfBothHitSameCandle = backtestConfig.worstCaseIfBothHit,
+            printReport = printReport
         )
     }
 
@@ -466,7 +496,8 @@ object SignalBacktester {
         timingMode: TimingMode,
         entryPriceMode: EntryPriceMode,
         allowOverlappingTrades: Boolean,
-        worstCaseIfBothHitSameCandle: Boolean
+        worstCaseIfBothHitSameCandle: Boolean,
+        printReport: Boolean
     ): List<PatternBacktestRow> {
 
         val rows = ArrayList<PatternBacktestRow>(indicesByPattern.size)
@@ -556,32 +587,34 @@ object SignalBacktester {
                 .thenByDescending { it.winRate }
         )
 
-        println("============================================================")
-        println("=== Pattern Backtest Table (TP=${fmt(tpPct)}%) ===")
-        println("ExitKind: TP=take-profit hit | SL=stop-loss hit | HZ=horizon close (TP not hit in time)")
-        println("NOTE: win% = profitable trades (net > 0), not TP-hit%.")
-        println("------------------------------------------------------------")
-        println("#   pattern                               signals  trades  tr/day    win%   avgNet    medNet    sumNet  compNet   TP   SL   HZ")
-        println("-------------------------------------------------------------------------------------------------------------------------------")
+        if (printReport) {
+            println("============================================================")
+            println("=== Pattern Backtest Table (TP=${fmt(tpPct)}%) ===")
+            println("ExitKind: TP=take-profit hit | SL=stop-loss hit | HZ=horizon close (TP not hit in time)")
+            println("NOTE: win% = profitable trades (net > 0), not TP-hit%.")
+            println("------------------------------------------------------------")
+            println("#   pattern                               signals  trades  tr/day    win%   avgNet    medNet    sumNet  compNet   TP   SL   HZ")
+            println("-------------------------------------------------------------------------------------------------------------------------------")
 
-        rows.forEachIndexed { i, r ->
-            println(
-                "${(i + 1).toString().padEnd(3)} " +
-                        "${r.pattern.padEnd(36)} " +
-                        "${r.signals.toString().padStart(7)} " +
-                        "${r.trades.toString().padStart(7)} " +
-                        "${fmt(r.tradesPerDay).padStart(7)} " +
-                        "${pct(r.winRate).padStart(8)} " +
-                        "${pct(r.avgNet).padStart(8)} " +
-                        "${pct(r.medNet).padStart(9)} " +
-                        "${pct(r.sumNet).padStart(9)} " +
-                        "${pct(r.compNet).padStart(8)} " +
-                        "${r.tp.toString().padStart(4)} " +
-                        "${r.sl.toString().padStart(4)} " +
-                        "${r.hz.toString().padStart(4)}"
-            )
+            rows.forEachIndexed { i, r ->
+                println(
+                    "${(i + 1).toString().padEnd(3)} " +
+                            "${r.pattern.padEnd(36)} " +
+                            "${r.signals.toString().padStart(7)} " +
+                            "${r.trades.toString().padStart(7)} " +
+                            "${fmt(r.tradesPerDay).padStart(7)} " +
+                            "${pct(r.winRate).padStart(8)} " +
+                            "${pct(r.avgNet).padStart(8)} " +
+                            "${pct(r.medNet).padStart(9)} " +
+                            "${pct(r.sumNet).padStart(9)} " +
+                            "${pct(r.compNet).padStart(8)} " +
+                            "${r.tp.toString().padStart(4)} " +
+                            "${r.sl.toString().padStart(4)} " +
+                            "${r.hz.toString().padStart(4)}"
+                )
+            }
+            println("============================================================")
         }
-        println("============================================================")
 
         return rows
     }
@@ -820,6 +853,48 @@ object SignalBacktester {
         return diffs[diffs.size / 2]
     }
 
+    private data class OrderBookSeries(
+        val imbalance10: DoubleArray,
+        val spreadBps: DoubleArray,
+        val available: BooleanArray
+    )
+
+    private fun buildOrderBookSeries(
+        candles: List<Candle>,
+        snapshots: List<OrderBookSnapshot>?
+    ): OrderBookSeries? {
+        if (snapshots.isNullOrEmpty()) return null
+        val sorted = snapshots.sortedBy { it.timestamp }
+        val n = candles.size
+        val imbalance10 = DoubleArray(n) { 0.0 }
+        val spreadBps = DoubleArray(n) { Double.POSITIVE_INFINITY }
+        val available = BooleanArray(n) { false }
+
+        var snapIdx = 0
+        var last: OrderBookSnapshot? = null
+
+        for (i in 0 until n) {
+            val t = candles[i].openTime
+            while (snapIdx < sorted.size && sorted[snapIdx].timestamp <= t) {
+                last = sorted[snapIdx]
+                snapIdx++
+            }
+            if (last != null) {
+                val mid = last.midPrice
+                val spread = if (mid > 0.0) (last.spread / mid) * 10_000.0 else Double.POSITIVE_INFINITY
+                imbalance10[i] = last.imbalance10
+                spreadBps[i] = spread
+                available[i] = true
+            }
+        }
+
+        return OrderBookSeries(
+            imbalance10 = imbalance10,
+            spreadBps = spreadBps,
+            available = available
+        )
+    }
+
     // ---------------- CandleSeries (interval-aware ret5/15/30) ----------------
 
     private class CandleSeries(
@@ -830,7 +905,10 @@ object SignalBacktester {
         val high: DoubleArray,
         val low: DoubleArray,
         val close: DoubleArray,
-        val volume: DoubleArray
+        val volume: DoubleArray,
+        val orderBookImbalance10: DoubleArray,
+        val orderBookSpreadBps: DoubleArray,
+        val orderBookAvailable: BooleanArray
     ) {
         private val ret: DoubleArray = DoubleArray(n) { 0.0 }
         private val rangePct: DoubleArray = DoubleArray(n) { 0.0 }
@@ -908,7 +986,10 @@ object SignalBacktester {
                 volumeZ = volumeZ,
                 ret5m = ret5,
                 ret15m = ret15,
-                ret30m = ret30
+                ret30m = ret30,
+                orderBookImbalance10 = orderBookImbalance10[end],
+                orderBookSpreadBps = orderBookSpreadBps[end],
+                orderBookAvailable = orderBookAvailable[end]
             )
         }
 
@@ -958,7 +1039,11 @@ object SignalBacktester {
         }
 
         companion object {
-            fun from(candles: List<Candle>, intervalMillis: Long): CandleSeries {
+            fun from(
+                candles: List<Candle>,
+                intervalMillis: Long,
+                orderBookSeries: OrderBookSeries?
+            ): CandleSeries {
                 val n = candles.size
                 val ot = LongArray(n)
                 val o = DoubleArray(n)
@@ -975,7 +1060,12 @@ object SignalBacktester {
                     c[i] = candle.close.toDoubleOrNull() ?: 0.0
                     v[i] = candle.volume.toDoubleOrNull() ?: 0.0
                 }
-                return CandleSeries(n, intervalMillis, ot, o, h, l, c, v)
+
+                val obImb = orderBookSeries?.imbalance10 ?: DoubleArray(n) { 0.0 }
+                val obSpread = orderBookSeries?.spreadBps ?: DoubleArray(n) { Double.POSITIVE_INFINITY }
+                val obAvail = orderBookSeries?.available ?: BooleanArray(n) { false }
+
+                return CandleSeries(n, intervalMillis, ot, o, h, l, c, v, obImb, obSpread, obAvail)
             }
         }
     }

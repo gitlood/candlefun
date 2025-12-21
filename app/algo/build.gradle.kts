@@ -16,4 +16,5 @@ dependencies {
     implementation(project(":app:historicaldata"))
     implementation(libs.json)
     implementation(libs.json.jsr310)
+    testImplementation(kotlin("test"))
 }

@@ -70,7 +70,9 @@ class HistoricProfitGroupFinder(
             maxDrawdownPctAllowed = profitGroup.maxDrawdownAllowed
         )
 
-        printer.printReport(finalList, sorted.size, raw.size, params)
+        if (profitGroup.printReport) {
+            printer.printReport(finalList, sorted.size, raw.size, params)
+        }
         return finalList
     }
 
