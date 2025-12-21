@@ -1,4 +1,5 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
+import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.testing.jacoco.tasks.JacocoReport
 
 plugins {
@@ -17,5 +18,33 @@ subprojects {
             html.required.set(true)
             csv.required.set(false)
         }
+    }
+}
+
+tasks.register<JacocoReport>("jacocoRootReport") {
+    val testTasks = subprojects.flatMap { subproject ->
+        subproject.tasks.matching { it.name == "test" }
+    }
+    dependsOn(testTasks)
+
+    val sourceSets = subprojects.mapNotNull { subproject ->
+        subproject.extensions.findByName("sourceSets") as? SourceSetContainer
+    }
+
+    classDirectories.from(sourceSets.map { it.named("main").get().output })
+    sourceDirectories.from(sourceSets.map { it.named("main").get().allSource.srcDirs })
+    executionData.from(
+        subprojects.map { subproject ->
+            subproject.fileTree(subproject.buildDir).apply {
+                include("jacoco/test.exec")
+                include("jacoco/*.exec")
+            }
+        }
+    )
+
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
     }
 }
