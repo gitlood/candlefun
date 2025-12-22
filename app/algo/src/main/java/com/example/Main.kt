@@ -56,6 +56,7 @@ fun main(args: Array<String>) {
 
     val symbol = args.firstOrNull { it.startsWith("--symbol=") }?.substringAfter("=") ?: "ETHUSDT"
     val interval = args.firstOrNull { it.startsWith("--interval=") }?.substringAfter("=") ?: "5m"
+    val intervalMillis = intervalToMillis(interval)
     val verbose = args.firstOrNull { it.startsWith("--verbose=") }
         ?.substringAfter("=")
         ?.toBooleanStrictOrNull() ?: false
@@ -136,6 +137,27 @@ fun main(args: Array<String>) {
         ?.substringAfter("=")
         ?.toIntOrNull()
 
+    val eventDefaults = AlgoConfig().eventStudy
+    val eventStudy = eventDefaults.copy(
+        topK = eventTopK ?: eventDefaults.topK,
+        minPosCount = eventMinPos ?: eventDefaults.minPosCount,
+        patternBars = eventPatternBars ?: eventDefaults.patternBars,
+        contextBars = eventContextBars ?: eventDefaults.contextBars,
+        negativeSampleEveryN = eventNegEvery ?: eventDefaults.negativeSampleEveryN,
+        minNetEdge = eventMinNet ?: eventDefaults.minNetEdge,
+        embargoMinutes = eventEmbargoMin ?: eventDefaults.embargoMinutes,
+        stabilityFolds = eventStabilityFolds ?: eventDefaults.stabilityFolds,
+        minStableFolds = eventStableMinFolds ?: eventDefaults.minStableFolds,
+        minPosPerFold = eventStableMinPos ?: eventDefaults.minPosPerFold,
+        maxFdr = eventMaxFdr ?: eventDefaults.maxFdr,
+        regimeMinBuckets = eventRegimeMinBuckets ?: eventDefaults.regimeMinBuckets,
+        regimeMinPosPerBucket = eventRegimeMinPos ?: eventDefaults.regimeMinPosPerBucket,
+        minPosEventsToRun = eventMinPosEvents ?: eventDefaults.minPosEventsToRun,
+        minNegSamplesToRun = eventMinNegSamples ?: eventDefaults.minNegSamplesToRun,
+        minDistinctFullKeysToRun = eventMinDistinctFull ?: eventDefaults.minDistinctFullKeysToRun,
+        printReport = verbose
+    )
+
     val useWalkForward = !args.contains("--no-walkforward")
     val useQualityGate = !args.contains("--no-quality-gate")
 
@@ -171,9 +193,14 @@ fun main(args: Array<String>) {
 
     println("Sample span ≈ %.1f days".format(sampleDays))
 
+    val embargoBars = minutesToBars(eventStudy.embargoMinutes, intervalMillis)
     val (trainCandles, valCandles, testCandles) = if (useWalkForward) {
-        val splitResult = splitCandles(allCandles, split)
-        println("Walk-forward split: train=${splitResult.first.size}, val=${splitResult.second.size}, test=${splitResult.third.size}")
+        val splitResult = splitCandles(allCandles, split, embargoBars)
+        val embargoMsg = if (embargoBars > 0) " (embargoBars=$embargoBars)" else ""
+        println(
+            "Walk-forward split: train=${splitResult.first.size}, val=${splitResult.second.size}, " +
+                "test=${splitResult.third.size}$embargoMsg"
+        )
         splitResult
     } else {
         Triple(allCandles, allCandles, allCandles)
@@ -206,29 +233,8 @@ fun main(args: Array<String>) {
     // Optional: cap configs for debugging (set to e.g. 200 to test quickly)
     val maxConfigsToRun: Int? = maxConfigsToRunArg
 
-    val eventDefaults = AlgoConfig().eventStudy
-    val eventStudy = eventDefaults.copy(
-        topK = eventTopK ?: eventDefaults.topK,
-        minPosCount = eventMinPos ?: eventDefaults.minPosCount,
-        patternBars = eventPatternBars ?: eventDefaults.patternBars,
-        contextBars = eventContextBars ?: eventDefaults.contextBars,
-        negativeSampleEveryN = eventNegEvery ?: eventDefaults.negativeSampleEveryN,
-        minNetEdge = eventMinNet ?: eventDefaults.minNetEdge,
-        embargoMinutes = eventEmbargoMin ?: eventDefaults.embargoMinutes,
-        stabilityFolds = eventStabilityFolds ?: eventDefaults.stabilityFolds,
-        minStableFolds = eventStableMinFolds ?: eventDefaults.minStableFolds,
-        minPosPerFold = eventStableMinPos ?: eventDefaults.minPosPerFold,
-        maxFdr = eventMaxFdr ?: eventDefaults.maxFdr,
-        regimeMinBuckets = eventRegimeMinBuckets ?: eventDefaults.regimeMinBuckets,
-        regimeMinPosPerBucket = eventRegimeMinPos ?: eventDefaults.regimeMinPosPerBucket,
-        minPosEventsToRun = eventMinPosEvents ?: eventDefaults.minPosEventsToRun,
-        minNegSamplesToRun = eventMinNegSamples ?: eventDefaults.minNegSamplesToRun,
-        minDistinctFullKeysToRun = eventMinDistinctFull ?: eventDefaults.minDistinctFullKeysToRun,
-        printReport = verbose
-    )
-
     val base = AlgoConfig(
-        backtest = AlgoConfig().backtest.copy(intervalMillis = intervalToMillis(interval)),
+        backtest = AlgoConfig().backtest.copy(intervalMillis = intervalMillis),
         profitGroup = AlgoConfig().profitGroup.copy(
             maxGroupsToPrint = maxGroupsToPrint,
             printReport = verbose,
@@ -476,9 +482,16 @@ private fun parseDoubleList(spec: String?): List<Double> {
         .mapNotNull { it.trim().toDoubleOrNull() }
 }
 
+private fun minutesToBars(minutes: Int, intervalMillis: Long): Int {
+    if (minutes <= 0) return 0
+    val millis = minutes.toLong() * 60_000L
+    return (millis / intervalMillis).toInt().coerceAtLeast(0)
+}
+
 private fun splitCandles(
     candles: List<Candle>,
-    split: WalkForwardSplit
+    split: WalkForwardSplit,
+    embargoBars: Int
 ): Triple<List<Candle>, List<Candle>, List<Candle>> {
     val n = candles.size
     if (n < 3) return Triple(candles, emptyList(), emptyList())
@@ -487,9 +500,31 @@ private fun splitCandles(
     val valEnd = (n * (split.train + split.validation)).toInt().coerceAtLeast(trainEnd + 1)
         .coerceAtMost(n - 1)
 
-    val train = candles.subList(0, trainEnd)
-    val validation = candles.subList(trainEnd, valEnd)
-    val test = candles.subList(valEnd, n)
+    var trainEndIdx = trainEnd
+    var valStartIdx = trainEnd
+    var valEndIdx = valEnd
+    var testStartIdx = valEnd
+
+    if (embargoBars > 0) {
+        trainEndIdx = (trainEnd - embargoBars).coerceAtLeast(1)
+        valStartIdx = (trainEnd + embargoBars).coerceAtMost(valEndIdx)
+        valEndIdx = (valEnd - embargoBars).coerceAtLeast(valStartIdx + 1)
+        testStartIdx = (valEnd + embargoBars).coerceAtMost(n - 1)
+
+        val invalid =
+            trainEndIdx <= 0 || valStartIdx >= valEndIdx || testStartIdx >= n || trainEndIdx >= valStartIdx
+        if (invalid) {
+            println("Embargo too large for split; falling back to unembargoed walk-forward.")
+            trainEndIdx = trainEnd
+            valStartIdx = trainEnd
+            valEndIdx = valEnd
+            testStartIdx = valEnd
+        }
+    }
+
+    val train = candles.subList(0, trainEndIdx)
+    val validation = candles.subList(valStartIdx, valEndIdx)
+    val test = candles.subList(testStartIdx, n)
     return Triple(train, validation, test)
 }
 
@@ -601,9 +636,22 @@ private fun evaluateConfig(
         return ConfigResult(emptyList(), localBestRows)
     }
 
-    trainRows.forEach { recordBest(it) }
+    val requireStable =
+        cfg.eventStudy.stabilityFolds > 1 && cfg.eventStudy.minStableFolds > 1
+    val stableTrainRows = if (requireStable) {
+        trainRows.filter { it.stableFolds >= cfg.eventStudy.minStableFolds }
+    } else {
+        trainRows
+    }
 
-    val candidates = trainRows
+    if (requireStable && stableTrainRows.isEmpty()) {
+        if (verbose) println("No patterns passed stability filter.")
+        return ConfigResult(emptyList(), localBestRows)
+    }
+
+    stableTrainRows.forEach { recordBest(it) }
+
+    val candidates = stableTrainRows
         .asSequence()
         .filter { it.trades >= minTradesFloor }
         .mapNotNull { r ->
@@ -672,10 +720,12 @@ private fun printTopTrainRows(rows: List<SignalBacktester.PatternBacktestRow>, t
     if (rows.isEmpty()) return
     println("\n$title (${rows.size} tracked rows)")
     rows.sortedByDescending { it.compNet }.take(5).forEachIndexed { idx, r ->
+        val stableLabel = if (r.foldCount <= 1) "-" else "${r.stableFolds}/${r.foldCount}"
         println(
             "${(idx + 1).toString().padStart(2)} " +
                     "pattern=${r.pattern} compNet=${"%.4f".format(r.compNet)} " +
-                    "medNet=${"%.4f".format(r.medNet)} trades=${r.trades}"
+                    "medNet=${"%.4f".format(r.medNet)} trades=${r.trades} " +
+                    "stable=$stableLabel minFoldNet=${"%.4f".format(r.minFoldAvgNet)}"
         )
     }
 }

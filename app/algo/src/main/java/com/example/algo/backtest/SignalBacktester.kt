@@ -73,7 +73,10 @@ object SignalBacktester {
         val compNet: Double,
         val tp: Int,
         val sl: Int,
-        val hz: Int
+        val hz: Int,
+        val stableFolds: Int = 0,
+        val foldCount: Int = 1,
+        val minFoldAvgNet: Double = 0.0
     )
 
     // --- Improvement bundle:
@@ -413,6 +416,14 @@ object SignalBacktester {
             val feeUsed = if (ignoreCosts) 0.0 else backtestConfig.feePerSide
             val slipUsed = if (ignoreCosts) 0.0 else backtestConfig.slippagePerSide
             println("Costs: fee=${pct(feeUsed)} slip=${pct(slipUsed)} per side (ignoreCosts=$ignoreCosts)")
+            if (eventStudyConfig.stabilityFolds > 1 && eventStudyConfig.minStableFolds > 1) {
+                println(
+                    "Stability: folds=${eventStudyConfig.stabilityFolds} " +
+                        "minStableFolds=${eventStudyConfig.minStableFolds} " +
+                        "minPosPerFold=${eventStudyConfig.minPosPerFold} " +
+                        "minNetEdge=${pct(eventStudyConfig.minNetEdge)}"
+                )
+            }
             println(
                 "Patterns requested: $requestedPatternCount | Unique normalized keys: ${uniqueKeys.size} | " +
                         "Seq buckets: ${queriesBySeq.size} | Patterns with matches: ${indicesByPattern.size}"
@@ -433,7 +444,11 @@ object SignalBacktester {
             entryPriceMode = entryPriceMode,
             allowOverlappingTrades = backtestConfig.allowOverlappingTrades,
             worstCaseIfBothHitSameCandle = backtestConfig.worstCaseIfBothHit,
-            printReport = printReport
+            printReport = printReport,
+            foldStartIndex = minSignalIndex,
+            foldCount = eventStudyConfig.stabilityFolds,
+            minPosPerFold = eventStudyConfig.minPosPerFold,
+            minNetEdge = eventStudyConfig.minNetEdge
         )
     }
 
@@ -503,10 +518,53 @@ object SignalBacktester {
         entryPriceMode: EntryPriceMode,
         allowOverlappingTrades: Boolean,
         worstCaseIfBothHitSameCandle: Boolean,
-        printReport: Boolean
+        printReport: Boolean,
+        foldStartIndex: Int,
+        foldCount: Int,
+        minPosPerFold: Int,
+        minNetEdge: Double
     ): List<PatternBacktestRow> {
 
         val rows = ArrayList<PatternBacktestRow>(indicesByPattern.size)
+
+        fun computeStability(trades: List<TradeLite>): Pair<Int, Double> {
+            val foldCountNorm = foldCount.coerceAtLeast(1)
+            if (foldCountNorm <= 1) {
+                val avgNet = if (trades.isEmpty()) 0.0 else trades.map { it.netPct }.average()
+                val stable = if (trades.size >= minPosPerFold && avgNet >= minNetEdge) 1 else 0
+                return stable to avgNet
+            }
+
+            val foldStart = foldStartIndex.coerceIn(0, s.n - 1)
+            val foldSpan = (s.n - foldStart).coerceAtLeast(1)
+
+            fun foldIndex(entryIndex: Int): Int {
+                val raw =
+                    ((entryIndex - foldStart).toDouble() / foldSpan.toDouble()) * foldCountNorm.toDouble()
+                return raw.toInt().coerceIn(0, foldCountNorm - 1)
+            }
+
+            val counts = IntArray(foldCountNorm)
+            val sums = DoubleArray(foldCountNorm)
+
+            for (t in trades) {
+                val f = foldIndex(t.entryIndex)
+                counts[f]++
+                sums[f] += t.netPct
+            }
+
+            var stableFolds = 0
+            var minAvg = Double.POSITIVE_INFINITY
+            for (i in 0 until foldCountNorm) {
+                val c = counts[i]
+                if (c < minPosPerFold) continue
+                val avg = sums[i] / c.toDouble()
+                if (avg >= minNetEdge) stableFolds++
+                if (avg < minAvg) minAvg = avg
+            }
+            if (!minAvg.isFinite()) minAvg = 0.0
+            return stableFolds to minAvg
+        }
 
         val effectiveEntryMode =
             if (timingMode == TimingMode.TRADABLE_NEXT_OPEN) EntryPriceMode.ENTRY_CANDLE_OPEN else entryPriceMode
@@ -566,6 +624,9 @@ object SignalBacktester {
             val compNet = compoundInTimeOrder(trades)
 
             val tradesPerDay = trCount / spanDays
+            val stability = computeStability(trades)
+            val stableFolds = stability.first
+            val minFoldAvgNet = stability.second
 
             rows.add(
                 PatternBacktestRow(
@@ -581,7 +642,10 @@ object SignalBacktester {
                     compNet = compNet,
                     tp = tpN,
                     sl = slN,
-                    hz = hzN
+                    hz = hzN,
+                    stableFolds = stableFolds,
+                    foldCount = foldCount.coerceAtLeast(1),
+                    minFoldAvgNet = minFoldAvgNet
                 )
             )
         }
@@ -599,15 +663,18 @@ object SignalBacktester {
             println("ExitKind: TP=take-profit hit | SL=stop-loss hit | HZ=horizon close (TP not hit in time)")
             println("NOTE: win% = profitable trades (net > 0), not TP-hit%.")
             println("------------------------------------------------------------")
-            println("#   pattern                               signals  trades  tr/day    win%   avgNet    medNet    sumNet  compNet   TP   SL   HZ")
-            println("-------------------------------------------------------------------------------------------------------------------------------")
+            println("#   pattern                               signals  trades  st   minF   tr/day    win%   avgNet    medNet    sumNet  compNet   TP   SL   HZ")
+            println("----------------------------------------------------------------------------------------------------------------------------------------")
 
             rows.forEachIndexed { i, r ->
+                val stableLabel = if (r.foldCount <= 1) "-" else "${r.stableFolds}/${r.foldCount}"
                 println(
                     "${(i + 1).toString().padEnd(3)} " +
                             "${r.pattern.padEnd(36)} " +
                             "${r.signals.toString().padStart(7)} " +
                             "${r.trades.toString().padStart(7)} " +
+                            "${stableLabel.padStart(4)} " +
+                            "${pct(r.minFoldAvgNet).padStart(7)} " +
                             "${fmt(r.tradesPerDay).padStart(7)} " +
                             "${pct(r.winRate).padStart(8)} " +
                             "${pct(r.avgNet).padStart(8)} " +

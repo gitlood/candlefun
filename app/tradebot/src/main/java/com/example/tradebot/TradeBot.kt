@@ -72,22 +72,25 @@ class TradeBot(
 
         log("OpenPositions=${openPositions.size}")
 
-        exitPositions(latest, lastClose)
-        tryEnterPosition(
-            candles = recentCandles,
-            entryOpen = entryOpen,
-            lookbackBars = lookbackBars.coerceAtMost(recentCandles.size),
-            patternBars = patternBars.coerceAtMost(recentCandles.size),
-            contextBars = contextBars.coerceAtMost(recentCandles.size),
-            intervalMillis = intervalMillis,
-            currentTime = latest.openTime,
-            orderBookSnapshot = orderBookSnapshot
-        )
+        val exited = exitPositions(latest, lastClose)
+        if (!exited) {
+            tryEnterPosition(
+                candles = recentCandles,
+                entryOpen = entryOpen,
+                lookbackBars = lookbackBars.coerceAtMost(recentCandles.size),
+                patternBars = patternBars.coerceAtMost(recentCandles.size),
+                contextBars = contextBars.coerceAtMost(recentCandles.size),
+                intervalMillis = intervalMillis,
+                currentTime = latest.openTime,
+                orderBookSnapshot = orderBookSnapshot
+            )
+        }
     }
 
-    private suspend fun exitPositions(latest: Candle, lastClose: Double) {
-        if (openPositions.isEmpty()) return
+    private suspend fun exitPositions(latest: Candle, lastClose: Double): Boolean {
+        if (openPositions.isEmpty()) return false
 
+        var exited = false
         val it = openPositions.iterator()
         while (it.hasNext()) {
             val pos = it.next()
@@ -110,8 +113,10 @@ class TradeBot(
                     api.createOrder(spec.trade.symbol, "SELL", "MARKET", spec.trade.quantity, null, null)
                 }
                 it.remove()
+                exited = true
             }
         }
+        return exited
     }
 
     private suspend fun tryEnterPosition(
