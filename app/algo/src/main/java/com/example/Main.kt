@@ -24,6 +24,7 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.io.File
 import kotlin.math.min
 import kotlinx.coroutines.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 private data class Candidate(
     val cfg: AlgoConfig,
@@ -38,6 +39,7 @@ private data class ConfigResult(
     val bestTrainRows: List<SignalBacktester.PatternBacktestRow>
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 fun main(args: Array<String>) {
     val maxConfigsArg = args.firstOrNull { it.startsWith("--max-configs=") }
         ?.substringAfter("=")
@@ -84,7 +86,33 @@ fun main(args: Array<String>) {
         args.firstOrNull { it.startsWith("--orderbook-spread=") }?.substringAfter("=")
     ).ifEmpty { listOf(15.0) }
 
+    val eventTopK = args.firstOrNull { it.startsWith("--event-topk=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventMinPos = args.firstOrNull { it.startsWith("--event-min-pos=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventPatternBars = args.firstOrNull { it.startsWith("--event-pattern-bars=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventContextBars = args.firstOrNull { it.startsWith("--event-context-bars=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventNegEvery = args.firstOrNull { it.startsWith("--event-neg-every=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventMinPosEvents = args.firstOrNull { it.startsWith("--event-min-pos-events=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventMinNegSamples = args.firstOrNull { it.startsWith("--event-min-neg-samples=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventMinDistinctFull = args.firstOrNull { it.startsWith("--event-min-distinct=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+
     val useWalkForward = !args.contains("--no-walkforward")
+    val useQualityGate = !args.contains("--no-quality-gate")
 
     val dbPath = resolveCandleDbPath(symbol, interval)
 
@@ -139,15 +167,43 @@ fun main(args: Array<String>) {
     // Optional: cap configs for debugging (set to e.g. 200 to test quickly)
     val maxConfigsToRun: Int? = maxConfigsToRunArg
 
+    val eventDefaults = AlgoConfig().eventStudy
+    val eventStudy = eventDefaults.copy(
+        topK = eventTopK ?: eventDefaults.topK,
+        minPosCount = eventMinPos ?: eventDefaults.minPosCount,
+        patternBars = eventPatternBars ?: eventDefaults.patternBars,
+        contextBars = eventContextBars ?: eventDefaults.contextBars,
+        negativeSampleEveryN = eventNegEvery ?: eventDefaults.negativeSampleEveryN,
+        minPosEventsToRun = eventMinPosEvents ?: eventDefaults.minPosEventsToRun,
+        minNegSamplesToRun = eventMinNegSamples ?: eventDefaults.minNegSamplesToRun,
+        minDistinctFullKeysToRun = eventMinDistinctFull ?: eventDefaults.minDistinctFullKeysToRun,
+        printReport = verbose
+    )
+
     val base = AlgoConfig(
         backtest = AlgoConfig().backtest.copy(intervalMillis = intervalToMillis(interval)),
         profitGroup = AlgoConfig().profitGroup.copy(
             maxGroupsToPrint = maxGroupsToPrint,
             printReport = verbose
         ),
-        eventStudy = AlgoConfig().eventStudy.copy(printReport = verbose),
+        eventStudy = eventStudy,
         orderBook = AlgoConfig().orderBook.copy(enabled = orderBookEnabledEffective)
     )
+
+    if (!useQualityGate) {
+        println("ProfitGroupQualityGate disabled (--no-quality-gate).")
+    }
+    if (
+        eventTopK != null || eventMinPos != null || eventPatternBars != null || eventContextBars != null ||
+        eventNegEvery != null || eventMinPosEvents != null || eventMinNegSamples != null || eventMinDistinctFull != null
+    ) {
+        println(
+            "EventStudy overrides: topK=${eventStudy.topK}, minPos=${eventStudy.minPosCount}, " +
+                "patternBars=${eventStudy.patternBars}, contextBars=${eventStudy.contextBars}, " +
+                "negEvery=${eventStudy.negativeSampleEveryN}, minPosEvents=${eventStudy.minPosEventsToRun}, " +
+                "minNegSamples=${eventStudy.minNegSamplesToRun}, minDistinctFull=${eventStudy.minDistinctFullKeysToRun}"
+        )
+    }
 
     val configs = AlgoConfigSweeps.grid(
         base = base,
@@ -197,7 +253,8 @@ fun main(args: Array<String>) {
                     oosMinMed = oosMinMed,
                     shortlistTopProfitPerConfig = shortlistTopProfitPerConfig,
                     shortlistTopVolumePerConfig = shortlistTopVolumePerConfig,
-                    shortlistTopStablePerConfig = shortlistTopStablePerConfig
+                    shortlistTopStablePerConfig = shortlistTopStablePerConfig,
+                    useQualityGate = useQualityGate
                 )
             }
         }
@@ -399,7 +456,7 @@ private fun runSinglePattern(
         patterns = listOf(pattern),
         cfg = cfg,
         useRuleGate = true,
-        preferSeqOnly = true,
+        preferSeqOnly = false,
         orderBookSnapshots = if (cfg.orderBook.enabled) orderBookSnapshots else null,
         printReport = false
     )
@@ -426,7 +483,8 @@ private fun evaluateConfig(
     oosMinMed: Double,
     shortlistTopProfitPerConfig: Int,
     shortlistTopVolumePerConfig: Int,
-    shortlistTopStablePerConfig: Int
+    shortlistTopStablePerConfig: Int,
+    useQualityGate: Boolean
 ): ConfigResult {
     val localCandidates = LinkedHashMap<String, Candidate>()
     val localBestRows = mutableListOf<SignalBacktester.PatternBacktestRow>()
@@ -454,10 +512,12 @@ private fun evaluateConfig(
     val finder = HistoricProfitGroupFinder(trainCandles)
     val breakoutGroups = finder.findAndReport(cfg)
 
-    val gate = ProfitGroupQualityGate.decide(cfg, breakoutGroups)
-    if (!gate.proceed) {
-        if (verbose) println("SKIP config: ${gate.reason}")
-        return ConfigResult(emptyList(), localBestRows)
+    if (useQualityGate) {
+        val gate = ProfitGroupQualityGate.decide(cfg, breakoutGroups)
+        if (!gate.proceed) {
+            if (verbose) println("SKIP config: ${gate.reason}")
+            return ConfigResult(emptyList(), localBestRows)
+        }
     }
 
     val fullKeys =
@@ -472,7 +532,7 @@ private fun evaluateConfig(
         patterns = fullKeys,
         cfg = cfg,
         useRuleGate = true,
-        preferSeqOnly = true,
+        preferSeqOnly = false,
         orderBookSnapshots = if (cfg.orderBook.enabled) orderBookSnapshots else null,
         printReport = verbose
     )

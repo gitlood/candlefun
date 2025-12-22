@@ -119,7 +119,11 @@ object TradeBotRunner {
         val intervalMillis = intervalToMillis(spec.trade.candleInterval)
         val lookbackBars = barsFromMinutes(spec.cfg.backtest.lookbackMinutes, intervalMillis)
         val patternBars = spec.cfg.eventStudy.patternBars
-        return max(lookbackBars, patternBars).coerceAtLeast(2)
+        val contextBars = spec.cfg.eventStudy.contextBars
+        val minForPattern = patternBars + 2
+        val minForContext = contextBars + 1
+        val minForGate = lookbackBars + 1
+        return max(max(minForPattern, minForContext), minForGate).coerceAtLeast(2)
     }
 
     private fun barsFromMinutes(minutes: Int, intervalMillis: Long): Int {

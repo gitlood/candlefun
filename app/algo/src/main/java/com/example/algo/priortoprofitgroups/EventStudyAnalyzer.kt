@@ -3,6 +3,7 @@ package com.example.algo.priortoprofitgroups
 import com.example.platformutil.AlgoConfig
 import com.example.platformutil.BacktestConfig
 import com.example.platformutil.EventStudyConfig
+import com.example.platformutil.PatternBuckets
 import com.example.algo.model.BreakoutGroup
 import com.example.platformutil.model.Candle
 import kotlin.math.abs
@@ -506,30 +507,16 @@ object EventStudyAnalyzer {
         val patRangeMean = patRangeSum / patternBars.toDouble()
         val patVolMean = patVolSum / patternBars.toDouble()
 
-        val rangeRel = if (meanRange <= 0.0) 1.0 else patRangeMean / meanRange
-        val rangeB = when {
-            rangeRel < 0.80 -> 'S'
-            rangeRel < 1.25 -> 'N'
-            else -> 'L'
-        }
+        val rangeRel = if (meanRange <= 0.0) Double.NaN else patRangeMean / meanRange
+        val rangeB = PatternBuckets.bucketRangeRatio(rangeRel)
 
-        val volRel = if (meanVol <= 0.0) 1.0 else patVolMean / meanVol
-        val volB = when {
-            volRel < 0.80 -> 's'
-            volRel < 1.25 -> 'n'
-            else -> 'b'
-        }
+        val volRel = if (meanVol <= 0.0) Double.NaN else patVolMean / meanVol
+        val volB = PatternBuckets.bucketVolumeRatio(volRel)
 
         val c0 = d(candles[startPat].close) ?: return null
         val c1 = d(candles[entryIndex - 1].close) ?: return null
         val ret = if (c0 == 0.0) 0.0 else (c1 / c0) - 1.0
-        val retB = when {
-            ret < -0.004 -> "DN2"
-            ret < -0.0015 -> "DN1"
-            ret < 0.0015 -> "FL"
-            ret < 0.004 -> "UP1"
-            else -> "UP2"
-        }
+        val retB = PatternBuckets.bucketRet(ret)
 
         return "seq=${seq}|ret=$retB|rng=$rangeB|vol=$volB|last=$lastShape"
     }

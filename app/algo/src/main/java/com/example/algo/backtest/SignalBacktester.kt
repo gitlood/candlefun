@@ -6,6 +6,7 @@ import com.example.platformutil.EventStudyConfig
 import com.example.platformutil.ProfitGroupConfig
 import com.example.platformutil.OrderBookSignalConfig
 import com.example.platformutil.SignalConfig
+import com.example.platformutil.PatternBuckets
 import com.example.algo.model.BacktestFeatures
 import com.example.platformutil.model.Candle
 import com.example.platformutil.model.OrderBookSnapshot
@@ -227,21 +228,28 @@ object SignalBacktester {
         if (candidates.isEmpty()) return null
 
         val strictMatches = candidates.filter { matchesStrict(it, k) }
-        val pool = if (strictMatches.isNotEmpty()) strictMatches else candidates.filter { matchesRelaxed(it, k) }
-
-        if (pool.isEmpty()) return null
-
-        return if (preferSeqOnly) {
-            // Least-specific first: seq-only beats seq|last beats full key
-            pool.minWithOrNull(
-                compareBy<PatternQuery> { it.specificity }.thenBy { it.normalizedKey.length }
-            )
-        } else {
-            // Most-specific first: full key beats seq|last beats seq-only
-            pool.maxWithOrNull(
-                compareBy<PatternQuery> { it.specificity }.thenBy { it.normalizedKey.length }
-            )
+        if (strictMatches.isNotEmpty()) {
+            return if (preferSeqOnly) {
+                // Least-specific first: seq-only beats seq|last beats full key
+                strictMatches.minWithOrNull(
+                    compareBy<PatternQuery> { it.specificity }.thenBy { it.normalizedKey.length }
+                )
+            } else {
+                // Most-specific first: full key beats seq|last beats seq-only
+                strictMatches.maxWithOrNull(
+                    compareBy<PatternQuery> { it.specificity }.thenBy { it.normalizedKey.length }
+                )
+            }
         }
+
+        if (!preferSeqOnly) return null
+
+        val relaxedMatches = candidates.filter { matchesRelaxed(it, k) }
+        if (relaxedMatches.isEmpty()) return null
+
+        return relaxedMatches.minWithOrNull(
+            compareBy<PatternQuery> { it.specificity }.thenBy { it.normalizedKey.length }
+        )
     }
 
     fun runPatternBacktests(
@@ -333,9 +341,7 @@ object SignalBacktester {
                 s = series,
                 entryIndex = keyEvalIndex,
                 patternBars = eventStudyConfig.patternBars,
-                contextBars = eventStudyConfig.contextBars,
-                ruleLookbackBarsForBuckets = max(ruleLookbackBars, eventStudyConfig.contextBars + 5), // cheap baseline
-                lookbackMinutesForRetBucket = backtestConfig.lookbackMinutes
+                contextBars = eventStudyConfig.contextBars
             ) ?: continue
 
             val seqCandidates = queriesBySeq[key.seqKey] ?: continue
@@ -694,16 +700,40 @@ object SignalBacktester {
         s: CandleSeries,
         entryIndex: Int,
         patternBars: Int,
-        contextBars: Int,
-        ruleLookbackBarsForBuckets: Int,
-        lookbackMinutesForRetBucket: Int
+        contextBars: Int
     ): KeyBundle? {
         val startPat = entryIndex - patternBars
+        val startCtx = (entryIndex - contextBars).coerceAtLeast(0)
         if (startPat < 1 || entryIndex <= 1) return null
 
         val seq = StringBuilder()
         var lastShape = "N"
         var setupHigh = Double.NEGATIVE_INFINITY
+        var patRangeSum = 0.0
+        var patVolSum = 0.0
+
+        var rangeSum = 0.0
+        var rangeN = 0
+        var volSum = 0.0
+        var volN = 0
+
+        for (i in startCtx until entryIndex) {
+            val h = s.high[i]
+            val l = s.low[i]
+            val v = s.volume[i]
+            if (!h.isFinite() || !l.isFinite()) continue
+            val range = h - l
+            if (range > 0.0) {
+                rangeSum += range
+                rangeN++
+            }
+            if (v.isFinite()) {
+                volSum += v
+                volN++
+            }
+        }
+        val meanRange = if (rangeN == 0) 0.0 else rangeSum / rangeN
+        val meanVol = if (volN == 0) 0.0 else volSum / volN
 
         for (i in startPat until entryIndex) {
             val o = s.open[i]
@@ -715,6 +745,9 @@ object SignalBacktester {
             if (range <= 0.0) return null
 
             setupHigh = max(setupHigh, h)
+            patRangeSum += range
+            val v = s.volume[i]
+            if (v.isFinite()) patVolSum += v
 
             val body = abs(c - o)
             val upperW = h - max(o, c)
@@ -748,22 +781,20 @@ object SignalBacktester {
             }
         }
 
-        // Buckets computed at entryIndex using a cheap rolling baseline
-        val f = s.featuresAt(entryIndex, ruleLookbackBarsForBuckets) ?: return null
+        val patRangeMean = patRangeSum / patternBars.toDouble()
+        val patVolMean = patVolSum / patternBars.toDouble()
 
-        // ret bucket: use lookbackMinutesForRetBucket (NOT ret30m)
-        val lookbackBars = barsFromMinutes(lookbackMinutesForRetBucket, s.intervalMillis)
+        val rngBucket = bucketRange(patRangeMean, meanRange)
+
+        val volRel = if (meanVol <= 0.0) Double.NaN else patVolMean / meanVol
+        val volBucket = bucketVol(volRel)
+
         val end = entryIndex - 1
-        val a = (end - lookbackBars).coerceAtLeast(0)
-        val retLookback = retBetweenClose(s, a, end)
-        val retBucket = bucketRet(retLookback)
-
-        // rng bucket: compare last candle range% vs mean range% baseline
-        val rangeNow = if (s.close[end] > 0.0) (s.high[end] - s.low[end]) / s.close[end] else 0.0
-        val rngBucket = bucketRange(rangeNow, f.rangeMean)
-
-        // vol bucket: based on volumeZ
-        val volBucket = bucketVol(f.volumeZ)
+        val c0 = s.close[startPat]
+        val c1 = s.close[end]
+        if (!c0.isFinite() || !c1.isFinite() || c0 <= 0.0) return null
+        val ret = (c1 / c0) - 1.0
+        val retBucket = bucketRet(ret)
 
         val seqKey = "seq=$seq"
         return KeyBundle(
@@ -776,45 +807,17 @@ object SignalBacktester {
         )
     }
 
-    private fun retBetweenClose(s: CandleSeries, aIdx: Int, bIdx: Int): Double {
-        val a = aIdx.coerceIn(0, s.n - 1)
-        val b = bIdx.coerceIn(0, s.n - 1)
-        if (a >= b) return 0.0
-        val cA = s.close[a]
-        val cB = s.close[b]
-        if (!cA.isFinite() || !cB.isFinite() || cA <= 0.0) return 0.0
-        return (cB / cA) - 1.0
-    }
-
     private fun bucketRet(ret: Double): String {
-        // Fraction -> bucket. Tune these to match your EventStudyAnalyzer buckets if needed.
-        // These cutoffs are intentionally "crypto-ish".
-        return when {
-            ret <= -0.015 -> "DN2"
-            ret <= -0.0075 -> "DN1"
-            ret < 0.0075 -> "FL"
-            ret < 0.015 -> "UP1"
-            else -> "UP2"
-        }
+        return PatternBuckets.bucketRet(ret)
     }
 
     private fun bucketRange(rangeNow: Double, rangeMean: Double): String {
         if (!rangeNow.isFinite() || !rangeMean.isFinite() || rangeMean <= 0.0) return "N"
-        val ratio = rangeNow / rangeMean
-        return when {
-            ratio < 0.85 -> "L"
-            ratio > 1.15 -> "H"
-            else -> "N"
-        }
+        return PatternBuckets.bucketRangeRatio(rangeNow / rangeMean)
     }
 
-    private fun bucketVol(volumeZ: Double): String {
-        if (!volumeZ.isFinite()) return "n"
-        return when {
-            volumeZ >= 0.50 -> "b"
-            volumeZ <= -0.50 -> "s"
-            else -> "n"
-        }
+    private fun bucketVol(volumeRatio: Double): String {
+        return PatternBuckets.bucketVolumeRatio(volumeRatio)
     }
 
     // ---------------- Helpers ----------------

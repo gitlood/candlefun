@@ -109,14 +109,14 @@ class SignalBacktesterInternalTest {
         assertEquals("UP2", retMethod.invoke(SignalBacktester, 0.03))
 
         val rangeMethod = privateMethod("bucketRange", Double::class.javaPrimitiveType!!, Double::class.javaPrimitiveType!!)
-        assertEquals("L", rangeMethod.invoke(SignalBacktester, 0.5, 1.0))
-        assertEquals("H", rangeMethod.invoke(SignalBacktester, 1.3, 1.0))
+        assertEquals("S", rangeMethod.invoke(SignalBacktester, 0.5, 1.0))
+        assertEquals("L", rangeMethod.invoke(SignalBacktester, 1.3, 1.0))
         assertEquals("N", rangeMethod.invoke(SignalBacktester, 1.0, 1.0))
 
         val volMethod = privateMethod("bucketVol", Double::class.javaPrimitiveType!!)
-        assertEquals("b", volMethod.invoke(SignalBacktester, 0.6))
-        assertEquals("s", volMethod.invoke(SignalBacktester, -0.6))
-        assertEquals("n", volMethod.invoke(SignalBacktester, 0.0))
+        assertEquals("b", volMethod.invoke(SignalBacktester, 1.3))
+        assertEquals("s", volMethod.invoke(SignalBacktester, 0.7))
+        assertEquals("n", volMethod.invoke(SignalBacktester, 1.0))
     }
 
     @Test

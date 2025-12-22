@@ -29,7 +29,9 @@ class TradeBotExitConditionsTest {
 
         val candles0 = listOf(
             candleAt(0L, close = "1.00"),
-            candleAt(60_000L, close = "1.00")
+            candleAt(60_000L, close = "1.00"),
+            candleAt(120_000L, close = "1.00"),
+            candleAt(180_000L, close = "1.00")
         )
         bot.onCandles(candles0)
         assertEquals(1, bot.openPositions.size)
@@ -37,7 +39,9 @@ class TradeBotExitConditionsTest {
         val candles1 = listOf(
             candleAt(0L, close = "1.00"),
             candleAt(60_000L, close = "1.00"),
-            candleAt(120_000L, close = "0.80")
+            candleAt(120_000L, close = "1.00"),
+            candleAt(180_000L, close = "1.00"),
+            candleAt(240_000L, close = "0.80")
         )
         bot.onCandles(candles1)
         assertEquals(0, bot.openPositions.size)
@@ -57,7 +61,9 @@ class TradeBotExitConditionsTest {
 
         val candles0 = listOf(
             candleAt(0L, close = "1.00"),
-            candleAt(60_000L, close = "1.00")
+            candleAt(60_000L, close = "1.00"),
+            candleAt(120_000L, close = "1.00"),
+            candleAt(180_000L, close = "1.00")
         )
         bot.onCandles(candles0)
         assertEquals(1, bot.openPositions.size)
@@ -65,7 +71,9 @@ class TradeBotExitConditionsTest {
         val candles1 = listOf(
             candleAt(0L, close = "1.00"),
             candleAt(60_000L, close = "1.00"),
-            candleAt(120_000L, close = "1.00", high = "BAD")
+            candleAt(120_000L, close = "1.00"),
+            candleAt(180_000L, close = "1.00"),
+            candleAt(240_000L, close = "1.00", high = "BAD")
         )
         bot.onCandles(candles1)
         assertEquals(0, bot.openPositions.size)
@@ -79,7 +87,7 @@ class TradeBotExitConditionsTest {
                 lookbackMinutes = 1,
                 horizonMinutes = horizonMinutes
             ),
-            eventStudy = EventStudyConfig(patternBars = 2),
+            eventStudy = EventStudyConfig(patternBars = 2, contextBars = 2),
             signal = SignalConfig(
                 ret30mMin = -1.0,
                 volumeZMin = -999.0,

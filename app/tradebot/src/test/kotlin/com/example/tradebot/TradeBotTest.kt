@@ -25,7 +25,7 @@ class TradeBotTest {
                 lookbackMinutes = 1,
                 horizonMinutes = 10
             ),
-            eventStudy = EventStudyConfig(patternBars = 2),
+            eventStudy = EventStudyConfig(patternBars = 2, contextBars = 2),
             signal = SignalConfig(
                 ret30mMin = -1.0,
                 volumeZMin = -999.0,
@@ -43,13 +43,15 @@ class TradeBotTest {
 
         val candle0 = candleAt(0L, open = "1.00", close = "1.01")
         val candle1 = candleAt(60_000L, open = "1.00", close = "1.01")
-        bot.onCandles(listOf(candle0, candle1))
+        val candle2 = candleAt(120_000L, open = "1.00", close = "1.01")
+        val candle3 = candleAt(180_000L, open = "1.00", close = "1.01")
+        bot.onCandles(listOf(candle0, candle1, candle2, candle3))
 
         assertEquals(1, bot.openPositions.size)
         assertEquals(listOf("BUY"), api.calls.map { it.side })
 
-        val candle2 = candleAt(120_000L, open = "1.00", close = "1.90")
-        bot.onCandles(listOf(candle0, candle1, candle2))
+        val candle4 = candleAt(240_000L, open = "1.00", close = "1.90")
+        bot.onCandles(listOf(candle0, candle1, candle2, candle3, candle4))
 
         assertEquals(0, bot.openPositions.size)
         assertEquals(listOf("BUY", "SELL"), api.calls.map { it.side })

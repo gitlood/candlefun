@@ -27,7 +27,7 @@ class TradeBotOrderBookGateTest {
                 lookbackMinutes = 1,
                 horizonMinutes = 10
             ),
-            eventStudy = EventStudyConfig(patternBars = 2),
+            eventStudy = EventStudyConfig(patternBars = 2, contextBars = 2),
             signal = SignalConfig(
                 ret30mMin = -1.0,
                 volumeZMin = -999.0,
@@ -50,7 +50,9 @@ class TradeBotOrderBookGateTest {
 
         val candles0 = listOf(
             candleAt(0L, close = "1.01"),
-            candleAt(60_000L, close = "1.01")
+            candleAt(60_000L, close = "1.01"),
+            candleAt(120_000L, close = "1.01"),
+            candleAt(180_000L, close = "1.01")
         )
         val failSnapshot = snapshot(imbalance10 = 0.05, spread = 0.1, mid = 100.0)
         bot.onCandles(candles0, failSnapshot)
@@ -59,7 +61,9 @@ class TradeBotOrderBookGateTest {
         val candles1 = listOf(
             candleAt(0L, close = "1.01"),
             candleAt(60_000L, close = "1.01"),
-            candleAt(120_000L, close = "1.02")
+            candleAt(120_000L, close = "1.01"),
+            candleAt(180_000L, close = "1.01"),
+            candleAt(240_000L, close = "1.02")
         )
         val passSnapshot = snapshot(imbalance10 = 0.5, spread = 0.1, mid = 100.0)
         bot.onCandles(candles1, passSnapshot)

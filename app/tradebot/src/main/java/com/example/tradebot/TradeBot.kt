@@ -1,6 +1,7 @@
 package com.example.tradebot
 
 import com.example.network.interfaces.BinanceTestNetApiService
+import com.example.platformutil.PatternBuckets
 import com.example.platformutil.model.BotSpec
 import com.example.platformutil.model.Candle
 import com.example.platformutil.model.ExecutionMode
@@ -57,7 +58,8 @@ class TradeBot(
 
         val lookbackBars = TradeBotMath.barsFromMinutes(cfg.backtest.lookbackMinutes, intervalMillis)
         val patternBars = cfg.eventStudy.patternBars
-        val requiredBars = max(lookbackBars, patternBars).coerceAtLeast(2)
+        val contextBars = cfg.eventStudy.contextBars
+        val requiredBars = requiredBarsForWindow(lookbackBars, patternBars, contextBars)
 
         if (sorted.size < requiredBars) {
             log("Not enough candles yet. have=${sorted.size} need=$requiredBars (lookback=$lookbackBars patternBars=$patternBars)")
@@ -66,15 +68,17 @@ class TradeBot(
 
         val recentCandles = sorted.takeLast(requiredBars)
         val lastClose = latest.close.toDoubleOrNull() ?: return
+        val entryOpen = latest.open.toDoubleOrNull() ?: return
 
         log("OpenPositions=${openPositions.size}")
 
         exitPositions(latest, lastClose)
         tryEnterPosition(
             candles = recentCandles,
-            lastClose = lastClose,
+            entryOpen = entryOpen,
             lookbackBars = lookbackBars.coerceAtMost(recentCandles.size),
             patternBars = patternBars.coerceAtMost(recentCandles.size),
+            contextBars = contextBars.coerceAtMost(recentCandles.size),
             intervalMillis = intervalMillis,
             currentTime = latest.openTime,
             orderBookSnapshot = orderBookSnapshot
@@ -112,9 +116,10 @@ class TradeBot(
 
     private suspend fun tryEnterPosition(
         candles: List<Candle>,
-        lastClose: Double,
+        entryOpen: Double,
         lookbackBars: Int,
         patternBars: Int,
+        contextBars: Int,
         intervalMillis: Long,
         currentTime: Long,
         orderBookSnapshot: OrderBookSnapshot?
@@ -124,7 +129,12 @@ class TradeBot(
             return
         }
 
-        val signalIndex = candles.lastIndex
+        val entryIndex = candles.lastIndex
+        val signalIndex = entryIndex - 1
+        if (signalIndex < 1) {
+            log("Not enough candles for signal evaluation yet.")
+            return
+        }
 
         val gate = passesSignalGate(
             candles = candles,
@@ -137,17 +147,18 @@ class TradeBot(
             "Signal Gate -> ${if (gate.ok) "PASS ✅" else "FAIL ❌"} " +
                     "(ret30m=${fmt(gate.ret30m)} min=${fmt(gate.ret30mMax)} " +
                     "volumeZ=${fmt(gate.volumeZ)} min=${fmt(gate.volumeZMin)} " +
-                    "contractionRatio=${fmt(gate.contractionRatio)} max=${fmt(gate.contractionRatioMax)})"
+                    "contractionRatio=${fmt(gate.contractionRatio)} max=${fmt(gate.contractionRatioMax)} " +
+                    "slope=${fmt(gate.trendSlope)} min=${fmt(gate.trendSlopeMin)})"
         )
 
-        val keys = currentSeqKeys(candles, signalIndex, patternBars)
+        val keys = currentPatternKey(candles, entryIndex, patternBars, contextBars)
         if (keys == null) {
             log("Pattern key extraction failed. Skipping.")
             return
         }
 
-        val matched = (keys.seqOnly in patterns) || (keys.seqWithLast in patterns)
-        log("Pattern key -> ${keys.seqWithLast}")
+        val matched = (keys.fullKey in patterns) || (keys.seqWithLast in patterns) || (keys.seqOnly in patterns)
+        log("Pattern key -> ${keys.fullKey}")
         log("Pattern match -> ${if (matched) "MATCH ✅" else "NO MATCH ❌"}")
 
         val orderBookOk = passesOrderBookGate(orderBookSnapshot)
@@ -157,9 +168,9 @@ class TradeBot(
 
         val fillPrice = if (spec.trade.mode == ExecutionMode.TESTNET) {
             val resp = api.createOrder(spec.trade.symbol, "BUY", "MARKET", spec.trade.quantity, null, null)
-            resp.bestEffortPrice() ?: lastClose
+            resp.bestEffortPrice() ?: entryOpen
         } else {
-            lastClose
+            entryOpen
         }
 
         openPositions.add(LongPos(currentTime, fillPrice))
@@ -168,25 +179,54 @@ class TradeBot(
 
     // ----------------------- Pattern helpers -----------------------
 
-    private data class KeyPair(val seqOnly: String, val seqWithLast: String)
+    private data class PatternKey(val seqOnly: String, val seqWithLast: String, val fullKey: String)
 
-    private fun currentSeqKeys(candles: List<Candle>, signalIndex: Int, patternBars: Int): KeyPair? {
-        val startPat = signalIndex - patternBars + 1
-        if (startPat < 0) return null
+    private fun currentPatternKey(
+        candles: List<Candle>,
+        entryIndex: Int,
+        patternBars: Int,
+        contextBars: Int
+    ): PatternKey? {
+        val startPat = entryIndex - patternBars
+        val startCtx = (entryIndex - contextBars).coerceAtLeast(0)
+        if (startPat < 1 || entryIndex <= 1) return null
 
         val seq = StringBuilder()
         var lastShape = "N"
+        var patRangeSum = 0.0
+        var patVolSum = 0.0
 
         fun d(s: String) = s.toDoubleOrNull()
 
-        for (i in startPat..signalIndex) {
+        var rangeSum = 0.0
+        var rangeN = 0
+        var volSum = 0.0
+        var volN = 0
+        for (i in startCtx until entryIndex) {
+            val h = d(candles[i].high) ?: continue
+            val l = d(candles[i].low) ?: continue
+            val v = d(candles[i].volume) ?: 0.0
+            val r = h - l
+            if (r > 0.0) {
+                rangeSum += r; rangeN++
+            }
+            volSum += v; volN++
+        }
+        val meanRange = if (rangeN == 0) 0.0 else rangeSum / rangeN
+        val meanVol = if (volN == 0) 0.0 else volSum / volN
+
+        for (i in startPat until entryIndex) {
             val o = d(candles[i].open) ?: return null
             val h = d(candles[i].high) ?: return null
             val l = d(candles[i].low) ?: return null
             val c = d(candles[i].close) ?: return null
+            val v = d(candles[i].volume) ?: 0.0
 
             val range = h - l
             if (range <= 0.0) return null
+
+            patRangeSum += range
+            patVolSum += v
 
             val bodyFrac = abs(c - o) / range
             val dir = when {
@@ -203,7 +243,7 @@ class TradeBot(
             if (seq.isNotEmpty()) seq.append('.')
             seq.append(dir).append(b)
 
-            if (i == signalIndex) {
+            if (i == entryIndex - 1) {
                 lastShape = when {
                     bodyFrac < 0.12 -> "D"
                     (h - max(o, c)) / range > 0.55 && bodyFrac < 0.35 -> "PU"
@@ -215,7 +255,22 @@ class TradeBot(
 
         val seqOnly = "seq=$seq"
         val seqWithLast = "seq=$seq|last=$lastShape"
-        return KeyPair(seqOnly, seqWithLast)
+        val patRangeMean = patRangeSum / patternBars.toDouble()
+        val patVolMean = patVolSum / patternBars.toDouble()
+
+        val rangeRel = if (meanRange <= 0.0) Double.NaN else patRangeMean / meanRange
+        val volRel = if (meanVol <= 0.0) Double.NaN else patVolMean / meanVol
+
+        val c0 = d(candles[startPat].close) ?: return null
+        val c1 = d(candles[entryIndex - 1].close) ?: return null
+        val ret = if (c0 == 0.0) 0.0 else (c1 / c0) - 1.0
+
+        val retB = PatternBuckets.bucketRet(ret)
+        val rngB = PatternBuckets.bucketRangeRatio(rangeRel)
+        val volB = PatternBuckets.bucketVolumeRatio(volRel)
+
+        val fullKey = "seq=$seq|ret=$retB|rng=$rngB|vol=$volB|last=$lastShape"
+        return PatternKey(seqOnly, seqWithLast, fullKey)
     }
 
     private fun normalizePatterns(raw: List<String>): Set<String> {
@@ -234,9 +289,27 @@ class TradeBot(
             val parts = token1.split('|').map { it.trim() }.filter { it.isNotBlank() }
 
             val seqPart = parts.firstOrNull { it.startsWith("seq=") } ?: return@flatMap emptyList()
+            val retPart = parts.firstOrNull { it.startsWith("ret=") }
+            val rngPart = parts.firstOrNull { it.startsWith("rng=") }
+            val volPart = parts.firstOrNull { it.startsWith("vol=") }
             val lastPart = parts.firstOrNull { it.startsWith("last=") }
 
-            if (lastPart != null) listOf(seqPart, "$seqPart|$lastPart") else listOf(seqPart)
+            val hasBuckets = retPart != null || rngPart != null || volPart != null
+            if (hasBuckets) {
+                listOf(
+                    buildList {
+                        add(seqPart)
+                        if (retPart != null) add(retPart)
+                        if (rngPart != null) add(rngPart)
+                        if (volPart != null) add(volPart)
+                        if (lastPart != null) add(lastPart)
+                    }.joinToString("|")
+                )
+            } else if (lastPart != null) {
+                listOf(seqPart, "$seqPart|$lastPart")
+            } else {
+                listOf(seqPart)
+            }
         }.toHashSet()
     }
 
@@ -249,7 +322,9 @@ class TradeBot(
         val volumeZ: Double,
         val volumeZMin: Double,
         val contractionRatio: Double,
-        val contractionRatioMax: Double
+        val contractionRatioMax: Double,
+        val trendSlope: Double,
+        val trendSlopeMin: Double
     )
 
     private fun passesSignalGate(
@@ -271,7 +346,9 @@ class TradeBot(
                 volumeZ = 0.0,
                 volumeZMin = cfg.signal.volumeZMin,
                 contractionRatio = 0.0,
-                contractionRatioMax = cfg.signal.contractionMax
+                contractionRatioMax = cfg.signal.contractionMax,
+                trendSlope = 0.0,
+                trendSlopeMin = cfg.signal.trendSlopeMin
             )
         }
 
@@ -284,7 +361,9 @@ class TradeBot(
                 volumeZ = 0.0,
                 volumeZMin = cfg.signal.volumeZMin,
                 contractionRatio = 0.0,
-                contractionRatioMax = cfg.signal.contractionMax
+                contractionRatioMax = cfg.signal.contractionMax,
+                trendSlope = 0.0,
+                trendSlopeMin = cfg.signal.trendSlopeMin
             )
         }
         val vols = DoubleArray(lb) { i -> d(candles[start + i].volume) ?: 0.0 }
@@ -313,21 +392,26 @@ class TradeBot(
             if (lastN >= 2) std(rets.copyOfRange(rets.size - lastN, rets.size)) else 0.0
         val contractionRatio = if (volStd == 0.0) 0.0 else volStdRecent / volStd
 
+        val trendSlope = slopeFromCloses(closes)
+
         val s = cfg.signal
 
         // ✅ semantics you requested
         val retOk = ret30m >= s.ret30mMin              // fail if ret30m < ret30mMax
         val volOk = volumeZ >= s.volumeZMin
         val contractionOk = contractionRatio <= s.contractionMax // fail if ratio > contractionMin (max ratio)
+        val trendOk = trendSlope >= s.trendSlopeMin
 
         return Gate(
-            ok = retOk && volOk && contractionOk,
+            ok = retOk && volOk && contractionOk && trendOk,
             ret30m = ret30m,
             ret30mMax = s.ret30mMin,
             volumeZ = volumeZ,
             volumeZMin = s.volumeZMin,
             contractionRatio = contractionRatio,
-            contractionRatioMax = s.contractionMax
+            contractionRatioMax = s.contractionMax,
+            trendSlope = trendSlope,
+            trendSlopeMin = s.trendSlopeMin
         )
     }
 
@@ -341,6 +425,30 @@ class TradeBot(
         var ss = 0.0
         for (x in a) ss += (x - m) * (x - m)
         return sqrt(max(0.0, ss / a.size))
+    }
+
+    private fun slopeFromCloses(closes: DoubleArray): Double {
+        val n = closes.size
+        if (n < 2) return 0.0
+        val nPts = n.toDouble()
+        val sumX = (n - 1) * nPts / 2.0
+        val sumX2 = (n - 1) * nPts * (2 * n - 1) / 6.0
+        var sumY = 0.0
+        var sumXY = 0.0
+        for (i in closes.indices) {
+            val y = closes[i]
+            sumY += y
+            sumXY += i * y
+        }
+        val denom = nPts * sumX2 - sumX * sumX
+        return if (denom == 0.0) 0.0 else (nPts * sumXY - sumX * sumY) / denom
+    }
+
+    private fun requiredBarsForWindow(lookbackBars: Int, patternBars: Int, contextBars: Int): Int {
+        val minForPattern = patternBars + 2
+        val minForContext = contextBars + 1
+        val minForGate = lookbackBars + 1
+        return max(max(minForPattern, minForContext), minForGate).coerceAtLeast(2)
     }
 
     private fun passesOrderBookGate(snapshot: OrderBookSnapshot?): Boolean {

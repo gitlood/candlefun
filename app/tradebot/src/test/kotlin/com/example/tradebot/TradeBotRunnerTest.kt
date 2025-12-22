@@ -14,7 +14,7 @@ class TradeBotRunnerTest {
             name = "bot",
             cfg = AlgoConfig(
                 backtest = BacktestConfig(lookbackMinutes = 1, intervalMillis = 60_000L),
-                eventStudy = EventStudyConfig(patternBars = 2)
+                eventStudy = EventStudyConfig(patternBars = 2, contextBars = 2)
             ),
             patterns = emptySet()
         )
@@ -22,7 +22,7 @@ class TradeBotRunnerTest {
         val method = TradeBotRunner::class.java.getDeclaredMethod("requiredBarsFor", BotSpec::class.java)
         method.isAccessible = true
         val result = method.invoke(TradeBotRunner, spec) as Int
-        assertEquals(2, result)
+        assertEquals(4, result)
 
         val barsMethod = TradeBotRunner::class.java.getDeclaredMethod(
             "barsFromMinutes",
