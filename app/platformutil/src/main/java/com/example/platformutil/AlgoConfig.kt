@@ -97,6 +97,24 @@ data class EventStudyConfig(
 
     val maxNegatives: Int = 50_000,
 
+    /** Minimum net edge (fraction) to count a positive event. */
+    val minNetEdge: Double = 0.0,
+
+    /** Extra embargo time after a positive window (minutes). */
+    val embargoMinutes: Int = 0,
+
+    /** Stability filtering across time folds (1 disables). */
+    val stabilityFolds: Int = 1,
+    val minStableFolds: Int = 1,
+    val minPosPerFold: Int = 1,
+
+    /** Multiple testing control (<=0 disables, 0.1 = 10% FDR). */
+    val maxFdr: Double = 0.1,
+
+    /** Regime diversity: trend/vol buckets. */
+    val regimeMinBuckets: Int = 1,
+    val regimeMinPosPerBucket: Int = 1,
+
     // ✅ quality gate
     val minPosEventsToRun: Int = 10,
     val minNegSamplesToRun: Int = 500,

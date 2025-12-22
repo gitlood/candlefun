@@ -21,6 +21,7 @@ data class BreakoutGroup(
 
     val horizonClose: Double,
     val gainPctToHorizonClose: Double, // (horizonClose/entryOpen - 1)
+    val netPct: Double,                // net PnL with TP/SL + costs
 
     val thresholdHit: Double,          // 0.10 or 0.20 etc.
     val minutesToHit: Int,             // minutes until first hit of thresholdHit

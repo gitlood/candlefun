@@ -256,6 +256,7 @@ class BreakoutFinder(candles: List<Candle>) {
             gainPctToPeakHigh = gainToPeak,
             horizonClose = horizonClose,
             gainPctToHorizonClose = gainToClose,
+            netPct = netPct,
             thresholdHit = hit,
             minutesToHit = minutesToHit,
             minutesToPeak = minutesToPeak,

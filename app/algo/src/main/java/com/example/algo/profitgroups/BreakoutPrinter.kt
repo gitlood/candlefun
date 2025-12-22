@@ -81,6 +81,7 @@ class BreakoutPrinter(private val zoneId: ZoneId = ZoneId.systemDefault()) {
 
         val avgGain = finalList.map { it.gainPctToPeakHigh }.average()
         val avgGainClose = finalList.map { it.gainPctToHorizonClose }.average()
+        val avgNet = finalList.map { it.netPct }.average()
         val avgDrawdown = finalList.map { it.maxDrawdownPct }.average()
         val avgMinutesToHit = finalList.map { it.minutesToHit }.average()
         val avgMinutesToPeak = finalList.map { it.minutesToPeak }.average()
@@ -91,6 +92,7 @@ class BreakoutPrinter(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         println("------------------------------------------------------------")
         println("Avg gain to peakHigh: ${pct(avgGain)}")
         println("Avg gain to ${params.horizonMinutes}m close: ${pct(avgGainClose)}")
+        println("Avg net (TP/SL + costs): ${pct(avgNet)}")
         println("Avg max drawdown in window: ${pct(avgDrawdown)}")
         println("Avg minutes to hit threshold: ${String.format("%.1f", avgMinutesToHit)}m")
         println("Avg minutes to peak: ${String.format("%.1f", avgMinutesToPeak)}m")

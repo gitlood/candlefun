@@ -8,8 +8,11 @@ import com.example.platformutil.ProfitGroupMode
 import com.example.algo.model.BreakoutGroup
 import com.example.platformutil.model.Candle
 import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 object EventStudyAnalyzer {
@@ -30,6 +33,9 @@ object EventStudyAnalyzer {
         val posRate: Double,
         val negRate: Double,
         val lift: Double,
+        val pValue: Double,
+        val regimeBuckets: Int,
+        val avgNet: Double,
         val avgPeakGain: Double,
         val avgHorizonGain: Double,
         val avgMaxDd: Double,
@@ -49,7 +55,8 @@ object EventStudyAnalyzer {
         val negUsed: Int,
         val topCollapsedByPos: List<PatternRow>,
         val topCollapsedByLift: List<PatternRow>,
-        val topFullByLift: List<PatternRow>
+        val topFullByLift: List<PatternRow>,
+        val topFullByEdge: List<PatternRow>
     )
 
     private var lastResult: EventStudyResult? = null
@@ -60,6 +67,7 @@ object EventStudyAnalyzer {
         var sumPeakGain: Double = 0.0,
         var sumHorizonGain: Double = 0.0,
         var sumMaxDd: Double = 0.0,
+        var sumNet: Double = 0.0,
         var hit5: Int = 0,
         var hit3: Int = 0,
         var hit2: Int = 0
@@ -69,6 +77,7 @@ object EventStudyAnalyzer {
             sumPeakGain += g.gainPctToPeakHigh
             sumHorizonGain += g.gainPctToHorizonClose
             sumMaxDd += g.maxDrawdownPct
+            sumNet += g.netPct
 
             // BreakoutFinder/Group uses FRACTIONS (0.05, 0.03, 0.02)
             if (g.thresholdHit >= 0.05) hit5++
@@ -86,6 +95,7 @@ object EventStudyAnalyzer {
             sumPeakGain += o.sumPeakGain
             sumHorizonGain += o.sumHorizonGain
             sumMaxDd += o.sumMaxDd
+            sumNet += o.sumNet
             hit5 += o.hit5
             hit3 += o.hit3
             hit2 += o.hit2
@@ -94,7 +104,80 @@ object EventStudyAnalyzer {
         fun avgPeak() = if (posCount == 0) 0.0 else sumPeakGain / posCount
         fun avgHorizon() = if (posCount == 0) 0.0 else sumHorizonGain / posCount
         fun avgDd() = if (posCount == 0) 0.0 else sumMaxDd / posCount
+        fun avgNet() = if (posCount == 0) 0.0 else sumNet / posCount
     }
+
+    private data class FoldStats(
+        val posCounts: IntArray,
+        val netSums: DoubleArray
+    ) {
+        constructor(folds: Int) : this(IntArray(folds), DoubleArray(folds))
+
+        fun addPos(fold: Int, netPct: Double) {
+            if (fold < 0 || fold >= posCounts.size) return
+            posCounts[fold]++
+            netSums[fold] += netPct
+        }
+
+        fun mergeFrom(o: FoldStats) {
+            for (i in posCounts.indices) {
+                posCounts[i] += o.posCounts.getOrElse(i) { 0 }
+                netSums[i] += o.netSums.getOrElse(i) { 0.0 }
+            }
+        }
+
+        fun stableFoldCount(minPosPerFold: Int, minNetEdge: Double): Int {
+            var ok = 0
+            for (i in posCounts.indices) {
+                val c = posCounts[i]
+                if (c < minPosPerFold) continue
+                val avgNet = netSums[i] / c.toDouble()
+                if (avgNet >= minNetEdge) ok++
+            }
+            return ok
+        }
+
+        fun meetsStability(requiredFolds: Int, minPosPerFold: Int, minNetEdge: Double): Boolean {
+            if (requiredFolds <= 1) return true
+            return stableFoldCount(minPosPerFold, minNetEdge) >= requiredFolds
+        }
+    }
+
+    private data class RegimeStats(
+        val bucketCounts: HashMap<String, Int> = HashMap(),
+        val netSums: HashMap<String, Double> = HashMap()
+    ) {
+        fun add(bucket: String, netPct: Double) {
+            bucketCounts[bucket] = (bucketCounts[bucket] ?: 0) + 1
+            netSums[bucket] = (netSums[bucket] ?: 0.0) + netPct
+        }
+
+        fun mergeFrom(o: RegimeStats) {
+            for ((k, v) in o.bucketCounts) {
+                bucketCounts[k] = (bucketCounts[k] ?: 0) + v
+            }
+            for ((k, v) in o.netSums) {
+                netSums[k] = (netSums[k] ?: 0.0) + v
+            }
+        }
+
+        fun qualifyingBucketCount(minPosPerBucket: Int, minNetEdge: Double): Int {
+            var ok = 0
+            for ((bucket, count) in bucketCounts) {
+                if (count < minPosPerBucket) continue
+                val sum = netSums[bucket] ?: 0.0
+                val avg = sum / count.toDouble()
+                if (avg >= minNetEdge) ok++
+            }
+            return ok
+        }
+    }
+
+    private data class NegCandidate(
+        val index: Int,
+        val patternKey: String,
+        val regimeKey: String
+    )
 
     // ------------------------------------------------------------
     // Public API (config-driven)
@@ -151,6 +234,14 @@ object EventStudyAnalyzer {
             minPosCount = eventCfg.minPosCount,
             maxNegatives = eventCfg.maxNegatives,
             shouldPrint = eventCfg.printReport,
+            minNetEdge = eventCfg.minNetEdge,
+            embargoMinutes = eventCfg.embargoMinutes,
+            stabilityFolds = eventCfg.stabilityFolds,
+            minStableFolds = eventCfg.minStableFolds,
+            minPosPerFold = eventCfg.minPosPerFold,
+            maxFdr = eventCfg.maxFdr,
+            regimeMinBuckets = eventCfg.regimeMinBuckets,
+            regimeMinPosPerBucket = eventCfg.regimeMinPosPerBucket,
             minNegSamplesToRun = eventCfg.minNegSamplesToRun,
             minPosEventsToRun = eventCfg.minPosEventsToRun,
             minDistinctFullKeysToRun = eventCfg.minDistinctFullKeysToRun
@@ -160,6 +251,14 @@ object EventStudyAnalyzer {
     fun lastTopFullKeysByLift(limit: Int): List<String> {
         val r = lastResult ?: return emptyList()
         return r.topFullByLift
+            .take(limit)
+            .map { it.key }
+            .distinct()
+    }
+
+    fun lastTopFullKeysByEdge(limit: Int): List<String> {
+        val r = lastResult ?: return emptyList()
+        return r.topFullByEdge
             .take(limit)
             .map { it.key }
             .distinct()
@@ -176,6 +275,18 @@ object EventStudyAnalyzer {
     ): List<String> {
         analyze(candles, groups, cfg)
         return lastTopFullKeysByLift(cfg.eventStudy.topK)
+    }
+
+    /**
+     * Profit-aligned helper (net edge first, then lift).
+     */
+    fun runAndGetTopFullKeysByEdge(
+        candles: List<Candle>,
+        groups: List<BreakoutGroup>,
+        cfg: AlgoConfig,
+    ): List<String> {
+        analyze(candles, groups, cfg)
+        return lastTopFullKeysByEdge(cfg.eventStudy.topK)
     }
 
     // ------------------------------------------------------------
@@ -195,6 +306,14 @@ object EventStudyAnalyzer {
         minPosCount: Int,
         maxNegatives: Int,
         shouldPrint: Boolean,
+        minNetEdge: Double,
+        embargoMinutes: Int,
+        stabilityFolds: Int,
+        minStableFolds: Int,
+        minPosPerFold: Int,
+        maxFdr: Double,
+        regimeMinBuckets: Int,
+        regimeMinPosPerBucket: Int,
         minPosEventsToRun: Int,
         minNegSamplesToRun: Int,
         minDistinctFullKeysToRun: Int,
@@ -210,11 +329,14 @@ object EventStudyAnalyzer {
         val lookbackBars = ((lookbackMinutes * 60_000L) / intervalMillis)
             .toInt()
             .coerceAtLeast(1)
+        val embargoBars = ((embargoMinutes * 60_000L) / intervalMillis)
+            .toInt()
+            .coerceAtLeast(0)
 
         val minIndexNeeded = max(lookbackBars, patternBars + contextBarsForBaselines) + 1
 
         val posGroups = groups
-            .filter { it.entryIndex >= minIndexNeeded }
+            .filter { it.entryIndex >= minIndexNeeded && it.netPct >= minNetEdge }
             .distinctBy { it.entryIndex }
 
         if (posGroups.size < minPosEventsToRun) {
@@ -228,10 +350,10 @@ object EventStudyAnalyzer {
         candles.forEachIndexed { idx, c -> openTimeToIndex[c.openTime] = idx }
 
         val exclude = BooleanArray(candles.size)
-        for (g in groups) {
+        for (g in posGroups) {
             val start = (g.entryIndex - lookbackBars).coerceAtLeast(0)
             val endIdx = openTimeToIndex[g.windowEndOpenTime] ?: g.entryIndex
-            val end = (endIdx + 1).coerceAtMost(candles.lastIndex)
+            val end = (endIdx + 1 + embargoBars).coerceAtMost(candles.lastIndex)
             for (i in start..end) exclude[i] = true
         }
 
@@ -241,23 +363,24 @@ object EventStudyAnalyzer {
             if (!exclude[i]) negIdx.add(i)
         }
 
-        if (negIdx.size < minNegSamplesToRun) {
-            return failGate(
-                "neg sample too small after exclusions: ${negIdx.size} < ${minNegSamplesToRun}",
-                shouldPrint
-            )
-        }
-
         val rnd = Random(seed)
-        negIdx.shuffle(rnd)
-        if (negIdx.size > maxNegatives) {
-            negIdx.subList(maxNegatives, negIdx.size).clear()
-        }
 
         val statsByPattern = HashMap<String, PatternStats>(4096)
+        val posRegimeCounts = HashMap<String, Int>(256)
+        val regimeStatsByPattern = HashMap<String, RegimeStats>(2048)
 
         var posUsed = 0
         var negUsed = 0
+
+        val foldCount = stabilityFolds.coerceAtLeast(1)
+        val requiredStableFolds = min(minStableFolds, foldCount)
+        val foldSpan = (candles.size - minIndexNeeded).coerceAtLeast(1)
+        fun foldIndex(entryIndex: Int): Int {
+            val raw = ((entryIndex - minIndexNeeded).toDouble() / foldSpan.toDouble()) * foldCount
+            return raw.toInt().coerceIn(0, foldCount - 1)
+        }
+
+        val foldStatsByPattern = if (foldCount > 1) HashMap<String, FoldStats>(2048) else null
 
         for (g in posGroups) {
             val key = patternKey(
@@ -267,6 +390,18 @@ object EventStudyAnalyzer {
                 contextBars = contextBarsForBaselines
             ) ?: continue
             statsByPattern.getOrPut(key) { PatternStats() }.addPos(g)
+            val regimeKey = regimeKeyFromPatternKey(key)
+            if (regimeKey != null) {
+                posRegimeCounts[regimeKey] = (posRegimeCounts[regimeKey] ?: 0) + 1
+            }
+            val trendVolKey = trendVolBucketFromPatternKey(key)
+            if (trendVolKey != null) {
+                regimeStatsByPattern.getOrPut(key) { RegimeStats() }.add(trendVolKey, g.netPct)
+            }
+            if (foldStatsByPattern != null) {
+                val fold = foldIndex(g.entryIndex)
+                foldStatsByPattern.getOrPut(key) { FoldStats(foldCount) }.addPos(fold, g.netPct)
+            }
             posUsed++
         }
 
@@ -277,6 +412,7 @@ object EventStudyAnalyzer {
             )
         }
 
+        val negCandidatesByRegime = HashMap<String, MutableList<NegCandidate>>(256)
         for (idx in negIdx) {
             val key = patternKey(
                 candles = candles,
@@ -284,7 +420,64 @@ object EventStudyAnalyzer {
                 patternBars = patternBars,
                 contextBars = contextBarsForBaselines
             ) ?: continue
-            statsByPattern.getOrPut(key) { PatternStats() }.addNeg()
+            val regimeKey = regimeKeyFromPatternKey(key) ?: continue
+            negCandidatesByRegime.getOrPut(regimeKey) { mutableListOf() }
+                .add(NegCandidate(idx, key, regimeKey))
+        }
+
+        val totalCandidates = negCandidatesByRegime.values.sumOf { it.size }
+        if (totalCandidates < minNegSamplesToRun) {
+            return failGate(
+                "neg sample too small after exclusions: ${totalCandidates} < ${minNegSamplesToRun}",
+                shouldPrint
+            )
+        }
+
+        val maxNegCap = min(maxNegatives, totalCandidates)
+        val posRegimeTotal = posRegimeCounts.values.sum().coerceAtLeast(1)
+        val selected = ArrayList<NegCandidate>(maxNegCap)
+        val selectedIdx = HashSet<Int>(maxNegCap * 2)
+
+        for ((regime, posCount) in posRegimeCounts) {
+            val candidates = negCandidatesByRegime[regime] ?: continue
+            if (candidates.isEmpty()) continue
+            candidates.shuffle(rnd)
+            val target = ((maxNegCap.toDouble() * posCount.toDouble()) / posRegimeTotal.toDouble())
+                .roundToInt()
+                .coerceAtLeast(0)
+            val takeN = min(target, candidates.size)
+            for (i in 0 until takeN) {
+                val c = candidates[i]
+                if (selectedIdx.add(c.index)) selected.add(c)
+            }
+            if (selected.size >= maxNegCap) break
+        }
+
+        val minNeeded = min(minNegSamplesToRun, maxNegCap)
+        if (selected.size < minNeeded) {
+            val remaining = ArrayList<NegCandidate>(maxNegCap)
+            for (candidates in negCandidatesByRegime.values) {
+                for (c in candidates) {
+                    if (!selectedIdx.contains(c.index)) remaining.add(c)
+                }
+            }
+            remaining.shuffle(rnd)
+            val addN = min(minNeeded - selected.size, remaining.size)
+            for (i in 0 until addN) {
+                val c = remaining[i]
+                if (selectedIdx.add(c.index)) selected.add(c)
+            }
+        }
+
+        if (selected.size < minNegSamplesToRun) {
+            return failGate(
+                "neg sample too small after stratified sampling: ${selected.size} < ${minNegSamplesToRun}",
+                shouldPrint
+            )
+        }
+
+        for (cand in selected) {
+            statsByPattern.getOrPut(cand.patternKey) { PatternStats() }.addNeg()
             negUsed++
         }
 
@@ -297,10 +490,73 @@ object EventStudyAnalyzer {
             statsBySeq.getOrPut(ck) { PatternStats() }.mergeFrom(st)
         }
 
+        val stableFullKeys: Set<String>
+        val stableSeqKeys: Set<String>
+        if (foldStatsByPattern != null && requiredStableFolds > 1) {
+            stableFullKeys = foldStatsByPattern
+                .filterValues { it.meetsStability(requiredStableFolds, minPosPerFold, minNetEdge) }
+                .keys
+
+            val foldStatsBySeq = HashMap<String, FoldStats>(1024)
+            for ((k, fs) in foldStatsByPattern) {
+                val ck = collapseKey(k)
+                foldStatsBySeq.getOrPut(ck) { FoldStats(foldCount) }.mergeFrom(fs)
+            }
+            stableSeqKeys = foldStatsBySeq
+                .filterValues { it.meetsStability(requiredStableFolds, minPosPerFold, minNetEdge) }
+                .keys
+        } else {
+            stableFullKeys = statsByPattern.keys
+            stableSeqKeys = statsBySeq.keys
+        }
+
+        val regimeStatsBySeq = HashMap<String, RegimeStats>(1024)
+        for ((k, rs) in regimeStatsByPattern) {
+            val ck = collapseKey(k)
+            regimeStatsBySeq.getOrPut(ck) { RegimeStats() }.mergeFrom(rs)
+        }
+
+        val regimeBucketsByFullKey = regimeStatsByPattern.mapValues {
+            it.value.qualifyingBucketCount(regimeMinPosPerBucket, minNetEdge)
+        }
+        val regimeBucketsBySeqKey = regimeStatsBySeq.mapValues {
+            it.value.qualifyingBucketCount(regimeMinPosPerBucket, minNetEdge)
+        }
+        val regimeMin = regimeMinBuckets.coerceAtLeast(1)
+        val regimeFullKeys = if (regimeMin > 1) {
+            regimeBucketsByFullKey.filterValues { it >= regimeMin }.keys
+        } else {
+            statsByPattern.keys
+        }
+        val regimeSeqKeys = if (regimeMin > 1) {
+            regimeBucketsBySeqKey.filterValues { it >= regimeMin }.keys
+        } else {
+            statsBySeq.keys
+        }
+
+        val pValueByFullKey = statsByPattern.mapValues {
+            pValueTwoProp(it.value.posCount, it.value.negCount, posTotal, negTotal)
+        }
+        val pValueBySeqKey = statsBySeq.mapValues {
+            pValueTwoProp(it.value.posCount, it.value.negCount, posTotal, negTotal)
+        }
+        val fdrThresholdFull = fdrThreshold(pValueByFullKey.values, maxFdr)
+        val fdrThresholdSeq = fdrThreshold(pValueBySeqKey.values, maxFdr)
+        val fdrFullKeys = if (fdrThresholdFull.isFinite()) {
+            pValueByFullKey.filterValues { it <= fdrThresholdFull }.keys
+        } else {
+            statsByPattern.keys
+        }
+        val fdrSeqKeys = if (fdrThresholdSeq.isFinite()) {
+            pValueBySeqKey.filterValues { it <= fdrThresholdSeq }.keys
+        } else {
+            statsBySeq.keys
+        }
+
         fun pct(x: Double) = String.format("%.2f%%", x * 100.0)
         fun fmt(x: Double) = String.format("%.4f", x)
 
-        fun toRow(key: String, st: PatternStats): PatternRow {
+        fun toRow(key: String, st: PatternStats, pValue: Double, regimeBuckets: Int): PatternRow {
             val posRate = st.posCount.toDouble() / posTotal
             val negRate = st.negCount.toDouble() / negTotal
             val lift = liftSmoothed(st, posTotal, negTotal)
@@ -311,6 +567,9 @@ object EventStudyAnalyzer {
                 posRate = posRate,
                 negRate = negRate,
                 lift = lift,
+                pValue = pValue,
+                regimeBuckets = regimeBuckets,
+                avgNet = st.avgNet(),
                 avgPeakGain = st.avgPeak(),
                 avgHorizonGain = st.avgHorizon(),
                 avgMaxDd = st.avgDd(),
@@ -320,15 +579,21 @@ object EventStudyAnalyzer {
             )
         }
 
-        val filteredSeqEntries = statsBySeq.entries.filter { it.value.posCount >= minPosCount }
+        val filteredSeqEntries = statsBySeq.entries.filter {
+            it.value.posCount >= minPosCount &&
+                stableSeqKeys.contains(it.key) &&
+                regimeSeqKeys.contains(it.key) &&
+                fdrSeqKeys.contains(it.key)
+        }
 
         val topCollapsedByPos = filteredSeqEntries
             .sortedWith(
                 compareByDescending<Map.Entry<String, PatternStats>> { it.value.posCount }
                     .thenByDescending { liftSmoothed(it.value, posTotal, negTotal) }
+                    .thenByDescending { regimeBucketsBySeqKey[it.key] ?: 0 }
             )
             .take(topK)
-            .map { toRow(it.key, it.value) }
+            .map { toRow(it.key, it.value, pValueBySeqKey[it.key] ?: 1.0, regimeBucketsBySeqKey[it.key] ?: 0) }
 
         val topCollapsedByLift = filteredSeqEntries
             .sortedWith(
@@ -340,11 +605,17 @@ object EventStudyAnalyzer {
                     )
                 }
                     .thenByDescending { it.value.posCount }
+                    .thenByDescending { regimeBucketsBySeqKey[it.key] ?: 0 }
             )
             .take(topK)
-            .map { toRow(it.key, it.value) }
+            .map { toRow(it.key, it.value, pValueBySeqKey[it.key] ?: 1.0, regimeBucketsBySeqKey[it.key] ?: 0) }
 
-        val filteredFullEntries = statsByPattern.entries.filter { it.value.posCount >= minPosCount }
+        val filteredFullEntries = statsByPattern.entries.filter {
+            it.value.posCount >= minPosCount &&
+                stableFullKeys.contains(it.key) &&
+                regimeFullKeys.contains(it.key) &&
+                fdrFullKeys.contains(it.key)
+        }
 
         val topFullByLift = filteredFullEntries
             .sortedWith(
@@ -356,15 +627,38 @@ object EventStudyAnalyzer {
                     )
                 }
                     .thenByDescending { it.value.posCount }
+                    .thenByDescending { it.value.avgNet() }
+                    .thenByDescending { regimeBucketsByFullKey[it.key] ?: 0 }
             )
             .take(topK)
-            .map { toRow(it.key, it.value) }
+            .map { toRow(it.key, it.value, pValueByFullKey[it.key] ?: 1.0, regimeBucketsByFullKey[it.key] ?: 0) }
+
+        val topFullByEdge = filteredFullEntries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, PatternStats>> { it.value.avgNet() }
+                    .thenByDescending { liftSmoothed(it.value, posTotal, negTotal) }
+                    .thenByDescending { it.value.posCount }
+                    .thenByDescending { regimeBucketsByFullKey[it.key] ?: 0 }
+            )
+            .take(topK)
+            .map { toRow(it.key, it.value, pValueByFullKey[it.key] ?: 1.0, regimeBucketsByFullKey[it.key] ?: 0) }
 
         if (shouldPrint) {
             println("============================================================")
             println("=== Event Study: Most Common Pre-Breakout Patterns ===")
             println("Lookback: ${lookbackMinutes}m (${lookbackBars} bars) | PatternBars: $patternBars | ContextBars: $contextBarsForBaselines")
-            println("Positives (events): ${posGroups.size} (used=$posUsed) | Negatives (sampled): ${negIdx.size} (used=$negUsed)")
+            println("Positives (events): ${posGroups.size} (used=$posUsed) | Negatives (candidates): ${totalCandidates} (used=$negUsed)")
+            println("Positive filter: net >= ${pct(minNetEdge)}")
+            println("Embargo after positives: ${embargoMinutes}m (${embargoBars} bars)")
+            if (foldCount > 1 && requiredStableFolds > 1) {
+                println("Stability filter: folds=$foldCount minStableFolds=$requiredStableFolds minPosPerFold=$minPosPerFold")
+            }
+            if (maxFdr > 0.0 && maxFdr < 1.0) {
+                println("FDR filter: maxFdr=$maxFdr (full<=${fmt(fdrThresholdFull)} seq<=${fmt(fdrThresholdSeq)})")
+            }
+            if (regimeMin > 1) {
+                println("Regime filter: minBuckets=$regimeMin minPosPerBucket=$regimeMinPosPerBucket")
+            }
             println("Lift uses Laplace smoothing alpha=$LIFT_ALPHA (no INF)")
             println("------------------------------------------------------------")
 
@@ -380,11 +674,10 @@ object EventStudyAnalyzer {
                                 "pos=${r.posCount} (${pct(r.posRate)})  " +
                                 "neg=${r.negCount} (${pct(r.negRate)})  " +
                                 "lift=${fmt(r.lift)}  " +
-                                "avgPk=${pct(r.avgPeakGain)} avgH=${pct(r.avgHorizonGain)} avgDD=${
-                                    pct(
-                                        r.avgMaxDd
-                                    )
-                                }  " +
+                                "p=${fmt(r.pValue)}  " +
+                                "rg=${r.regimeBuckets}  " +
+                                "avgNet=${pct(r.avgNet)} avgPk=${pct(r.avgPeakGain)} avgH=${pct(r.avgHorizonGain)} " +
+                                "avgDD=${pct(r.avgMaxDd)}  " +
                                 "thr5=${r.hit5} thr3=${r.hit3} thr2=${r.hit2}  " +
                                 "pattern=${r.key}"
                     )
@@ -396,6 +689,8 @@ object EventStudyAnalyzer {
             printRows("TOP $topK (COLLAPSED) BY LIFT", topCollapsedByLift)
             println("------------------------------------------------------------")
             printRows("TOP $topK (FULL KEY) BY LIFT", topFullByLift)
+            println("------------------------------------------------------------")
+            printRows("TOP $topK (FULL KEY) BY NET EDGE", topFullByEdge)
             println("============================================================")
         }
 
@@ -410,7 +705,8 @@ object EventStudyAnalyzer {
             negUsed = negUsed,
             topCollapsedByPos = topCollapsedByPos,
             topCollapsedByLift = topCollapsedByLift,
-            topFullByLift = topFullByLift
+            topFullByLift = topFullByLift,
+            topFullByEdge = topFullByEdge
         )
     }
 
@@ -421,10 +717,73 @@ object EventStudyAnalyzer {
         return posRate / negRate
     }
 
+    private fun pValueTwoProp(posCount: Int, negCount: Int, posTotal: Int, negTotal: Int): Double {
+        if (posTotal <= 0 || negTotal <= 0) return 1.0
+        val p1 = posCount.toDouble() / posTotal.toDouble()
+        val p2 = negCount.toDouble() / negTotal.toDouble()
+        val pooled = (posCount + negCount).toDouble() / (posTotal + negTotal).toDouble()
+        val se = sqrt(pooled * (1.0 - pooled) * (1.0 / posTotal + 1.0 / negTotal))
+        if (!se.isFinite() || se <= 0.0) return 1.0
+        val z = (p1 - p2) / se
+        val p = 2.0 * (1.0 - normalCdf(abs(z)))
+        return p.coerceIn(0.0, 1.0)
+    }
+
+    private fun fdrThreshold(pValues: Collection<Double>, maxFdr: Double): Double {
+        if (pValues.isEmpty()) return Double.POSITIVE_INFINITY
+        if (maxFdr <= 0.0 || maxFdr >= 1.0) return Double.POSITIVE_INFINITY
+        val sorted = pValues.filter { it.isFinite() }.sorted()
+        if (sorted.isEmpty()) return Double.POSITIVE_INFINITY
+        var thresh = -1.0
+        val m = sorted.size
+        for (i in sorted.indices) {
+            val p = sorted[i]
+            val bound = ((i + 1).toDouble() / m.toDouble()) * maxFdr
+            if (p <= bound) thresh = p
+        }
+        return if (thresh < 0.0) 0.0 else thresh
+    }
+
+    private fun normalCdf(x: Double): Double {
+        return 0.5 * (1.0 + erfApprox(x / sqrt(2.0)))
+    }
+
+    private fun erfApprox(x: Double): Double {
+        val t = 1.0 / (1.0 + 0.5 * abs(x))
+        val tau = t * exp(
+            -x * x - 1.26551223 +
+                1.00002368 * t +
+                0.37409196 * t * t +
+                0.09678418 * t * t * t -
+                0.18628806 * t * t * t * t +
+                0.27886807 * t * t * t * t * t -
+                1.13520398 * t * t * t * t * t * t +
+                1.48851587 * t * t * t * t * t * t * t -
+                0.82215223 * t * t * t * t * t * t * t * t +
+                0.17087277 * t * t * t * t * t * t * t * t * t
+        )
+        return if (x >= 0) 1.0 - tau else tau - 1.0
+    }
+
     private fun collapseKey(fullKey: String): String {
         val seq = fullKey.substringAfter("seq=").substringBefore("|")
         val last = fullKey.substringAfter("|last=").substringBefore("|", missingDelimiterValue = "")
         return if (last.isBlank()) "seq=$seq" else "seq=$seq|last=$last"
+    }
+
+    private fun regimeKeyFromPatternKey(fullKey: String): String? {
+        val ret = fullKey.substringAfter("|ret=").substringBefore("|", missingDelimiterValue = "")
+        val rng = fullKey.substringAfter("|rng=").substringBefore("|", missingDelimiterValue = "")
+        val vol = fullKey.substringAfter("|vol=").substringBefore("|", missingDelimiterValue = "")
+        if (ret.isBlank() || rng.isBlank() || vol.isBlank()) return null
+        return "ret=$ret|rng=$rng|vol=$vol"
+    }
+
+    private fun trendVolBucketFromPatternKey(fullKey: String): String? {
+        val ret = fullKey.substringAfter("|ret=").substringBefore("|", missingDelimiterValue = "")
+        val rng = fullKey.substringAfter("|rng=").substringBefore("|", missingDelimiterValue = "")
+        if (ret.isBlank() || rng.isBlank()) return null
+        return "trend=$ret|vol=$rng"
     }
 
     private fun patternKey(

@@ -111,6 +111,30 @@ fun main(args: Array<String>) {
     val eventMinDistinctFull = args.firstOrNull { it.startsWith("--event-min-distinct=") }
         ?.substringAfter("=")
         ?.toIntOrNull()
+    val eventMinNet = args.firstOrNull { it.startsWith("--event-min-net=") }
+        ?.substringAfter("=")
+        ?.toDoubleOrNull()
+    val eventEmbargoMin = args.firstOrNull { it.startsWith("--event-embargo-min=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventStabilityFolds = args.firstOrNull { it.startsWith("--event-stability-folds=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventStableMinFolds = args.firstOrNull { it.startsWith("--event-stable-min-folds=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventStableMinPos = args.firstOrNull { it.startsWith("--event-stable-min-pos=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventMaxFdr = args.firstOrNull { it.startsWith("--event-max-fdr=") }
+        ?.substringAfter("=")
+        ?.toDoubleOrNull()
+    val eventRegimeMinBuckets = args.firstOrNull { it.startsWith("--event-regime-min-buckets=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
+    val eventRegimeMinPos = args.firstOrNull { it.startsWith("--event-regime-min-pos=") }
+        ?.substringAfter("=")
+        ?.toIntOrNull()
 
     val useWalkForward = !args.contains("--no-walkforward")
     val useQualityGate = !args.contains("--no-quality-gate")
@@ -189,6 +213,14 @@ fun main(args: Array<String>) {
         patternBars = eventPatternBars ?: eventDefaults.patternBars,
         contextBars = eventContextBars ?: eventDefaults.contextBars,
         negativeSampleEveryN = eventNegEvery ?: eventDefaults.negativeSampleEveryN,
+        minNetEdge = eventMinNet ?: eventDefaults.minNetEdge,
+        embargoMinutes = eventEmbargoMin ?: eventDefaults.embargoMinutes,
+        stabilityFolds = eventStabilityFolds ?: eventDefaults.stabilityFolds,
+        minStableFolds = eventStableMinFolds ?: eventDefaults.minStableFolds,
+        minPosPerFold = eventStableMinPos ?: eventDefaults.minPosPerFold,
+        maxFdr = eventMaxFdr ?: eventDefaults.maxFdr,
+        regimeMinBuckets = eventRegimeMinBuckets ?: eventDefaults.regimeMinBuckets,
+        regimeMinPosPerBucket = eventRegimeMinPos ?: eventDefaults.regimeMinPosPerBucket,
         minPosEventsToRun = eventMinPosEvents ?: eventDefaults.minPosEventsToRun,
         minNegSamplesToRun = eventMinNegSamples ?: eventDefaults.minNegSamplesToRun,
         minDistinctFullKeysToRun = eventMinDistinctFull ?: eventDefaults.minDistinctFullKeysToRun,
@@ -211,13 +243,21 @@ fun main(args: Array<String>) {
     }
     if (
         eventTopK != null || eventMinPos != null || eventPatternBars != null || eventContextBars != null ||
-        eventNegEvery != null || eventMinPosEvents != null || eventMinNegSamples != null || eventMinDistinctFull != null
+        eventNegEvery != null || eventMinPosEvents != null || eventMinNegSamples != null ||
+        eventMinDistinctFull != null || eventMinNet != null || eventEmbargoMin != null ||
+        eventStabilityFolds != null || eventStableMinFolds != null || eventStableMinPos != null ||
+        eventMaxFdr != null || eventRegimeMinBuckets != null || eventRegimeMinPos != null
     ) {
         println(
             "EventStudy overrides: topK=${eventStudy.topK}, minPos=${eventStudy.minPosCount}, " +
                 "patternBars=${eventStudy.patternBars}, contextBars=${eventStudy.contextBars}, " +
-                "negEvery=${eventStudy.negativeSampleEveryN}, minPosEvents=${eventStudy.minPosEventsToRun}, " +
-                "minNegSamples=${eventStudy.minNegSamplesToRun}, minDistinctFull=${eventStudy.minDistinctFullKeysToRun}"
+                "negEvery=${eventStudy.negativeSampleEveryN}, minNet=${eventStudy.minNetEdge}, " +
+                "embargoMin=${eventStudy.embargoMinutes}, folds=${eventStudy.stabilityFolds}, " +
+                "minStableFolds=${eventStudy.minStableFolds}, minPosPerFold=${eventStudy.minPosPerFold}, " +
+                "maxFdr=${eventStudy.maxFdr}, regimeMinBuckets=${eventStudy.regimeMinBuckets}, " +
+                "regimeMinPos=${eventStudy.regimeMinPosPerBucket}, " +
+                "minPosEvents=${eventStudy.minPosEventsToRun}, minNegSamples=${eventStudy.minNegSamplesToRun}, " +
+                "minDistinctFull=${eventStudy.minDistinctFullKeysToRun}"
         )
     }
 
@@ -540,7 +580,7 @@ private fun evaluateConfig(
     }
 
     val fullKeys =
-        EventStudyAnalyzer.runAndGetTopFullKeysByLift(trainCandles, breakoutGroups, cfg)
+        EventStudyAnalyzer.runAndGetTopFullKeysByEdge(trainCandles, breakoutGroups, cfg)
     if (fullKeys.isEmpty()) {
         if (verbose) println("No patterns returned. Skipping.")
         return ConfigResult(emptyList(), localBestRows)

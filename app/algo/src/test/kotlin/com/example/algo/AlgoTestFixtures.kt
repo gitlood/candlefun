@@ -40,6 +40,7 @@ internal fun breakoutGroup(entryOpenTime: Long, windowEnd: Long, gain: Double): 
         gainPctToPeakHigh = gain,
         horizonClose = 1.0,
         gainPctToHorizonClose = gain,
+        netPct = gain,
         thresholdHit = 0.05,
         minutesToHit = 1,
         minutesToPeak = 1,
