@@ -2,6 +2,7 @@ package com.example.algo.profitgroups
 
 import com.example.platformutil.AlgoConfig
 import com.example.algo.model.BreakoutGroup
+import com.example.platformutil.ProfitGroupMode
 import kotlin.math.abs
 
 object ProfitGroupQualityGate {
@@ -17,16 +18,18 @@ object ProfitGroupQualityGate {
             return Decision(false, "Too few groups after dedupe: ${groups.size} < $minNeeded (topK*minPosCount).")
         }
 
-        val topThr = cfg.profitGroup.thresholds.maxOrNull() ?: 0.0
-        val topHits = groups.count { it.thresholdHit >= topThr }
-        if (topHits < cfg.eventStudy.minPosCount) {
-            return Decision(false, "Too few hits at top threshold (${(topThr * 100).toInt()}%): $topHits.")
-        }
+        if (cfg.profitGroup.mode == ProfitGroupMode.TP_HIT) {
+            val topThr = cfg.profitGroup.thresholds.maxOrNull() ?: 0.0
+            val topHits = groups.count { it.thresholdHit >= topThr }
+            if (topHits < cfg.eventStudy.minPosCount) {
+                return Decision(false, "Too few hits at top threshold (${(topThr * 100).toInt()}%): $topHits.")
+            }
 
-        // Optional: avoid configs where the “breakouts” are barely moving
-        val avgPeak = groups.map { it.gainPctToPeakHigh }.average()
-        if (avgPeak < (cfg.profitGroup.thresholds.minOrNull() ?: 0.0) * 0.75) {
-            return Decision(false, "Breakouts too weak: avgPeak=${avgPeak * 100}%, below expected.")
+            // Optional: avoid configs where the “breakouts” are barely moving
+            val avgPeak = groups.map { it.gainPctToPeakHigh }.average()
+            if (avgPeak < (cfg.profitGroup.thresholds.minOrNull() ?: 0.0) * 0.75) {
+                return Decision(false, "Breakouts too weak: avgPeak=${avgPeak * 100}%, below expected.")
+            }
         }
 
         // Optional: reject nasty drawdown behavior

@@ -7,6 +7,7 @@ data class ProfitGroupConfig(
     /** FRACTIONS: ETH micro-pattern thresholds (auto-scaled from TP if needed) */
     val thresholds: DoubleArray = doubleArrayOf(0.008, 0.006, 0.004),  // 0.8%, 0.6%, 0.4%
     val localLowLookbackMinutes: Int = 5,                              // lookback for local lows
+    val mode: ProfitGroupMode = ProfitGroupMode.TP_HIT,
 
     /** Maximum allowed drawdown per group (FRACTION, 0.05 = 5%) */
     val maxDrawdownAllowed: Double = 0.05,                             // 5%
@@ -33,6 +34,7 @@ data class ProfitGroupConfig(
         if (maxGroupsToPrint != other.maxGroupsToPrint) return false
         if (printReport != other.printReport) return false
         if (!thresholds.contentEquals(other.thresholds)) return false
+        if (mode != other.mode) return false
         if (sortBy != other.sortBy) return false
         if (zoneId != other.zoneId) return false
 
@@ -47,6 +49,7 @@ data class ProfitGroupConfig(
         result = 31 * result + maxGroupsToPrint
         result = 31 * result + printReport.hashCode()
         result = 31 * result + thresholds.contentHashCode()
+        result = 31 * result + mode.hashCode()
         result = 31 * result + sortBy.hashCode()
         result = 31 * result + zoneId.hashCode()
         return result
@@ -156,3 +159,5 @@ data class AlgoConfig(
 }
 
 enum class ProfitGroupSort { TIME_ASC, GAIN_DESC, DRAWDOWN_ASC }
+
+enum class ProfitGroupMode { TP_HIT, NET_POSITIVE }

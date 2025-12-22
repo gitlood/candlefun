@@ -12,6 +12,7 @@ import com.example.historicaldata.HistoricalDataRepository
 import com.example.historicaldata.interfaces.OrderBookRepository
 import com.example.platformutil.ACTIVE_BOTS_FILE_NAME
 import com.example.platformutil.AlgoConfig
+import com.example.platformutil.ProfitGroupMode
 import com.example.platformutil.orderBookDbPath
 import com.example.platformutil.resolveCandleDbPath
 import com.example.platformutil.intervalToMillis
@@ -114,6 +115,20 @@ fun main(args: Array<String>) {
     val useWalkForward = !args.contains("--no-walkforward")
     val useQualityGate = !args.contains("--no-quality-gate")
 
+    val profitModeArg = args.firstOrNull { it.startsWith("--profit-mode=") }?.substringAfter("=")
+    val profitMode = when (profitModeArg?.lowercase()) {
+        null -> AlgoConfig().profitGroup.mode
+        "tp", "tp-hit", "tp_hit" -> ProfitGroupMode.TP_HIT
+        "net", "net-positive", "net_positive" -> ProfitGroupMode.NET_POSITIVE
+        else -> {
+            println("Unknown --profit-mode=$profitModeArg, defaulting to TP_HIT.")
+            ProfitGroupMode.TP_HIT
+        }
+    }
+    if (profitModeArg != null) {
+        println("ProfitGroup mode override: $profitMode")
+    }
+
     val dbPath = resolveCandleDbPath(symbol, interval)
 
     println("Fetching $interval $symbol candles from DB ($dbPath)...")
@@ -184,7 +199,8 @@ fun main(args: Array<String>) {
         backtest = AlgoConfig().backtest.copy(intervalMillis = intervalToMillis(interval)),
         profitGroup = AlgoConfig().profitGroup.copy(
             maxGroupsToPrint = maxGroupsToPrint,
-            printReport = verbose
+            printReport = verbose,
+            mode = profitMode
         ),
         eventStudy = eventStudy,
         orderBook = AlgoConfig().orderBook.copy(enabled = orderBookEnabledEffective)
@@ -510,7 +526,10 @@ private fun evaluateConfig(
     }
 
     val finder = HistoricProfitGroupFinder(trainCandles)
-    val breakoutGroups = finder.findAndReport(cfg)
+    val breakoutGroups = finder.findAndReport(
+        cfg = cfg,
+        orderBookSnapshots = if (cfg.orderBook.enabled) orderBookSnapshots else emptyList()
+    )
 
     if (useQualityGate) {
         val gate = ProfitGroupQualityGate.decide(cfg, breakoutGroups)

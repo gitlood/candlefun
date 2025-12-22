@@ -16,11 +16,11 @@ data class BreakoutGroup(
     val peakVolume: Double,
 
     val minLowInWindow: Double,
-    val maxDrawdownPct: Double,        // <= 0
-    val gainPctToPeakHigh: Double,     // (peakHigh/entryLow - 1)
+    val maxDrawdownPct: Double,        // <= 0, based on entryOpen
+    val gainPctToPeakHigh: Double,     // (peakHigh/entryOpen - 1)
 
     val horizonClose: Double,
-    val gainPctToHorizonClose: Double, // (horizonClose/entryLow - 1)
+    val gainPctToHorizonClose: Double, // (horizonClose/entryOpen - 1)
 
     val thresholdHit: Double,          // 0.10 or 0.20 etc.
     val minutesToHit: Int,             // minutes until first hit of thresholdHit

@@ -2,6 +2,7 @@ package com.example.algo.profitgroups
 
 import com.example.algo.model.BreakoutGroup
 import com.example.algo.model.ReportParams
+import com.example.platformutil.ProfitGroupMode
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -20,7 +21,12 @@ class BreakoutPrinter(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         finalList: List<BreakoutGroup>,
         totalCandles: Int,
         rawFoundCount: Int,
-        params: ReportParams
+        params: ReportParams,
+        profitGroupMode: ProfitGroupMode = ProfitGroupMode.TP_HIT,
+        takeProfitPct: Double = 0.0,
+        stopLossPct: Double = 0.0,
+        feePerSide: Double = 0.0,
+        slippagePerSide: Double = 0.0
     ) {
         val utcFmt = DateTimeFormatter.ISO_INSTANT
         val localFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(zoneId)
@@ -42,9 +48,16 @@ class BreakoutPrinter(private val zoneId: ZoneId = ZoneId.systemDefault()) {
                 params.thresholdsPct.sortedArrayDescending().joinToString { it.toString() }
             }"
         )
+        println("ProfitGroup mode: $profitGroupMode")
+        if (profitGroupMode == ProfitGroupMode.NET_POSITIVE) {
+            println(
+                "Net-positive filter: TP=${pct(takeProfitPct)} SL=${pct(stopLossPct)} " +
+                    "costs=${pct(feePerSide)}+${pct(slippagePerSide)} per side"
+            )
+        }
         println("Local-low lookback: ${params.localLowLookBackMinutes}m (${params.lookBackBars} bars)")
         println("Require continuous minutes: ${params.requireContinuous}")
-        println("Entry price used: candle.low (discovery mode)")
+        println("Entry price used: candle.open (trade simulation)")
         println("De-dupe overlapping windows: ${params.dedupeOverlappingWindows}")
         println("Max Drawdown Allowed: ${params.maxDrawdownPctAllowed * 100}%")
         println("Sort: ${params.sortBy}")
@@ -111,7 +124,7 @@ class BreakoutPrinter(private val zoneId: ZoneId = ZoneId.systemDefault()) {
             append(" ")
             append(col("pk", 4, right = true))
             append(" ")
-            append(col("entryLow", 12, right = true))
+            append(col("entryOpen", 12, right = true))
             append(" ")
             append(col("peakHigh", 12, right = true))
             append(" ")
@@ -142,7 +155,7 @@ class BreakoutPrinter(private val zoneId: ZoneId = ZoneId.systemDefault()) {
                 append(" ")
                 append(col(g.minutesToPeak.toString(), 4, right = true))
                 append(" ")
-                append(col(numStr(g.entryLow), 12, right = true))
+                append(col(numStr(g.entryOpen), 12, right = true))
                 append(" ")
                 append(col(numStr(g.peakHigh), 12, right = true))
                 append(" ")

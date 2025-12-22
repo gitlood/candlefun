@@ -4,6 +4,7 @@ import com.example.platformutil.AlgoConfig
 import com.example.platformutil.BacktestConfig
 import com.example.platformutil.EventStudyConfig
 import com.example.platformutil.PatternBuckets
+import com.example.platformutil.ProfitGroupMode
 import com.example.algo.model.BreakoutGroup
 import com.example.platformutil.model.Candle
 import kotlin.math.abs
@@ -105,17 +106,19 @@ object EventStudyAnalyzer {
         breakoutGroups: List<BreakoutGroup>,
         cfg: AlgoConfig,
     ) {
-        // quick gate: if you can’t even hit your highest threshold often enough,
-        // event study patterns will be junk.
-        val topThr = cfg.profitGroup.thresholds.maxOrNull() ?: 0.0
-        if (topThr > 0.0) {
-            val topHits = breakoutGroups.count { it.thresholdHit >= topThr }
-            if (topHits < cfg.eventStudy.minPosCount) {
-                failGate(
-                    "top-threshold hits too low (thr=${topThr}, hits=$topHits, min=${cfg.eventStudy.minPosCount})",
-                    true
-                )
-                return
+        if (cfg.profitGroup.mode == ProfitGroupMode.TP_HIT) {
+            // quick gate: if you can’t even hit your highest threshold often enough,
+            // event study patterns will be junk.
+            val topThr = cfg.profitGroup.thresholds.maxOrNull() ?: 0.0
+            if (topThr > 0.0) {
+                val topHits = breakoutGroups.count { it.thresholdHit >= topThr }
+                if (topHits < cfg.eventStudy.minPosCount) {
+                    failGate(
+                        "top-threshold hits too low (thr=${topThr}, hits=$topHits, min=${cfg.eventStudy.minPosCount})",
+                        true
+                    )
+                    return
+                }
             }
         }
 
