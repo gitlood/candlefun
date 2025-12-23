@@ -15,11 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Candle Fun"
 include(":app")
-include(":app:historicaldata")
 include(":app:network")
-include(":app:platformutil")
-include(":app:stackeddca")
-include(":app:algo")
-include(":app:tradebot")
-include(":app:orderbookscalper")
-include(":app:liveklines")

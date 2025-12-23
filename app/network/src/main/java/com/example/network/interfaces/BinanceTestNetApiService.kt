@@ -1,13 +1,24 @@
 package com.example.network.interfaces
 
-import com.example.network.BinanceTestNetApiServiceImpl
-import com.example.network.model.AccountInfo
-import com.example.network.model.TradeResponse
-import java.io.File
-import java.io.FileInputStream
-import java.util.Properties
+import com.example.network.model.Account
+import com.example.network.model.OrderResponse
 
+/**
+ * Interface for accessing Binance Testnet API endpoints.
+ * This service allows placing test orders and retrieving account information on the testnet.
+ */
 interface BinanceTestNetApiService {
+    /**
+     * Places a new order on the testnet.
+     *
+     * @param symbol The trading pair symbol (e.g., "BTCUSDT").
+     * @param side The order side ("BUY" or "SELL").
+     * @param type The order type (e.g., "LIMIT", "MARKET").
+     * @param quantity The quantity of the asset to trade.
+     * @param price The price for the order. Required for LIMIT orders.
+     * @param timeInForce The time in force policy (e.g., "GTC", "IOC"). Required for LIMIT orders.
+     * @return A [OrderResponse] object containing the order details.
+     */
     suspend fun createOrder(
         symbol: String,
         side: String,
@@ -15,38 +26,12 @@ interface BinanceTestNetApiService {
         quantity: String,
         price: String? = null,
         timeInForce: String? = null
-    ): TradeResponse
+    ): OrderResponse
 
-    suspend fun fetchAccountInfo(): AccountInfo
-
-    companion object {
-        fun create(): BinanceTestNetApiService {
-            val properties = Properties()
-            
-            // Try current directory (project root usually)
-            var file = File("local.properties")
-            if (!file.exists()) {
-                // Try parent directory
-                file = File("../local.properties")
-            }
-            
-            if (file.exists()) {
-                try {
-                    FileInputStream(file).use { properties.load(it) }
-                } catch (e: Exception) {
-                    System.err.println("Failed to read ${file.absolutePath}: ${e.message}")
-                }
-            }
-
-            val apiKey = properties.getProperty("BINANCE_TEST_KEY")
-                ?: System.getenv("BINANCE_TEST_KEY")
-                ?: error("Missing BINANCE_TESTNET_API_KEY in local.properties or environment")
-
-            val secret = properties.getProperty("BINANCE_TEST_SECRET")
-                ?: System.getenv("BINANCE_TEST_SECRET")
-                ?: error("Missing BINANCE_TESTNET_API_SECRET in local.properties or environment")
-
-            return BinanceTestNetApiServiceImpl(apiKey = apiKey, secretKey = secret)
-        }
-    }
+    /**
+     * Retrieves account information including balances and permissions from the testnet.
+     *
+     * @return An [Account] object containing account details.
+     */
+    suspend fun fetchAccountInfo(): Account
 }

@@ -4,7 +4,6 @@
 }
 
 dependencies {
-    implementation(project(":app:platformutil"))
     implementation("io.ktor:ktor-client-core:2.3.11")
     implementation("io.ktor:ktor-client-cio:2.3.11")
     implementation("io.ktor:ktor-client-content-negotiation:2.3.11")

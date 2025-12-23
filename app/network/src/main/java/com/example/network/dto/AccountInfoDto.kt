@@ -1,9 +1,9 @@
-package com.example.network.model
+package com.example.network.dto
 
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class AccountInfo(
+data class AccountInfoDto(
     val makerCommission: Int = 0,
     val takerCommission: Int = 0,
     val buyerCommission: Int = 0,
@@ -13,5 +13,12 @@ data class AccountInfo(
     val canDeposit: Boolean = false,
     val updateTime: Long = 0,
     val accountType: String = "",
-    val balances: List<Balance> = emptyList()
+    val balances: List<BalanceDto> = emptyList()
+)
+
+@Serializable
+data class BalanceDto(
+    val asset: String,
+    val free: String,
+    val locked: String
 )

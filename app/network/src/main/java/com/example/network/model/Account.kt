@@ -1,9 +1,6 @@
 package com.example.network.model
 
-import kotlinx.serialization.Serializable
-
-@Serializable
-data class AccountInfo(
+data class Account(
     val makerCommission: Int = 0,
     val takerCommission: Int = 0,
     val buyerCommission: Int = 0,
@@ -13,5 +10,11 @@ data class AccountInfo(
     val canDeposit: Boolean = false,
     val updateTime: Long = 0,
     val accountType: String = "",
-    val balances: List<Balance> = emptyList()
+    val balances: List<AccountBalance> = emptyList()
+)
+
+data class AccountBalance(
+    val asset: String,
+    val free: Double,
+    val locked: Double
 )

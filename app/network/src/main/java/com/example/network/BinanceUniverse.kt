@@ -1,35 +1,20 @@
 package com.example.network
 
-import com.example.network.client.client
+import com.example.network.dto.ExchangeInfoDto
+import com.example.network.dto.Ticker24HrDto
+import com.example.network.helper.NetworkConstants.BASE_URL
+import com.example.network.helper.getOrThrow
+import com.example.network.model.SymbolLiquidity
+import com.example.network.model.UniverseConfig
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
-import io.ktor.client.request.get
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-
-data class SymbolLiquidity(
-    val symbol: String,
-    val quoteVolume: Double,
-    val trades: Int
-)
-
-data class UniverseConfig(
-    val quoteAssets: Set<String> = setOf("USDT"),
-    val minQuoteVolume: Double = 0.0,
-    val minTrades: Int = 0,
-    val maxSymbols: Int = 10,
-    val includeSymbols: Set<String> = emptySet(),
-    val excludeSymbols: Set<String> = emptySet()
-)
 
 class BinanceUniverse(
-    private val httpClient: HttpClient = client
+    private val httpClient: HttpClient
 ) {
-    private val baseUrl = "https://api.binance.com/api/v3"
 
     suspend fun fetchTopSymbols(config: UniverseConfig): List<SymbolLiquidity> {
-        val exchangeInfo: ExchangeInfo = httpClient.get("$baseUrl/exchangeInfo").body()
-        val tickers: List<Ticker24h> = httpClient.get("$baseUrl/ticker/24hr").body()
+        val exchangeInfo = httpClient.getOrThrow<ExchangeInfoDto>("$BASE_URL/exchangeInfo")
+        val tickers = httpClient.getOrThrow<List<Ticker24HrDto>>("$BASE_URL/ticker/24hr")
 
         val exchangeAllowed = exchangeInfo.symbols
             .filter { symbol ->
@@ -64,8 +49,8 @@ class BinanceUniverse(
             .map {
                 SymbolLiquidity(
                     symbol = it.symbol,
-                    quoteVolume = it.quoteVolume?.toDoubleOrNull() ?: 0.0,
-                    trades = it.trades ?: 0
+                    quoteVolume = it.quoteVolume.toDoubleOrNull() ?: 0.0,
+                    trades = it.count.toInt()
                 )
             }
             .filter { it.quoteVolume >= config.minQuoteVolume }
@@ -75,27 +60,4 @@ class BinanceUniverse(
 
         return if (config.maxSymbols > 0) ranked.take(config.maxSymbols) else ranked
     }
-
-    @Serializable
-    private data class ExchangeInfo(
-        val symbols: List<ExchangeSymbol> = emptyList()
-    )
-
-    @Serializable
-    private data class ExchangeSymbol(
-        val symbol: String,
-        val status: String? = null,
-        val quoteAsset: String? = null,
-        val isSpotTradingAllowed: Boolean? = null,
-        val permissions: List<String>? = null
-    )
-
-    @Serializable
-    private data class Ticker24h(
-        val symbol: String,
-        @SerialName("quoteVolume")
-        val quoteVolume: String? = null,
-        @SerialName("count")
-        val trades: Int? = null
-    )
 }
