@@ -1,6 +1,7 @@
 package com.example.network.interfaces
 
 import com.example.network.BinanceTestNetApiServiceImpl
+import com.example.network.model.AccountInfo
 import com.example.network.model.TradeResponse
 import java.io.File
 import java.io.FileInputStream
@@ -15,6 +16,8 @@ interface BinanceTestNetApiService {
         price: String? = null,
         timeInForce: String? = null
     ): TradeResponse
+
+    suspend fun fetchAccountInfo(): AccountInfo
 
     companion object {
         fun create(): BinanceTestNetApiService {

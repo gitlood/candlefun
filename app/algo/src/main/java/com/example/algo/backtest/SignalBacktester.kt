@@ -2,11 +2,12 @@ package com.example.algo.backtest
 
 import com.example.platformutil.AlgoConfig
 import com.example.platformutil.BacktestConfig
+import com.example.platformutil.ConfluenceConfig
 import com.example.platformutil.EventStudyConfig
+import com.example.platformutil.PatternBuckets
 import com.example.platformutil.ProfitGroupConfig
 import com.example.platformutil.OrderBookSignalConfig
 import com.example.platformutil.SignalConfig
-import com.example.platformutil.PatternBuckets
 import com.example.algo.model.BacktestFeatures
 import com.example.platformutil.model.Candle
 import com.example.platformutil.model.OrderBookSnapshot
@@ -133,6 +134,162 @@ object SignalBacktester {
         ignoreCosts = ignoreCosts
     )
 
+    fun runConfluenceBreakoutBacktest(
+        candlesRaw: List<Candle>,
+        confluencePatterns: List<String>,
+        cfg: AlgoConfig,
+        intervalMillisOverride: Long? = null,
+        timingMode: TimingMode = TimingMode.TRADABLE_NEXT_OPEN,
+        entryPriceMode: EntryPriceMode = EntryPriceMode.ENTRY_CANDLE_OPEN,
+        useRuleGate: Boolean = true,
+        orderBookSnapshots: List<OrderBookSnapshot>? = null,
+        printReport: Boolean = true,
+        confluenceConfig: ConfluenceConfig = cfg.confluence
+    ): PatternBacktestRow? {
+        if (candlesRaw.isEmpty() || confluencePatterns.isEmpty()) {
+            if (printReport) {
+                println("ConfluenceBacktest: nothing to do (candles=${candlesRaw.size}, patterns=${confluencePatterns.size})")
+            }
+            return null
+        }
+
+        val candles = candlesRaw.sortedBy { it.openTime }
+        val intervalMillis = intervalMillisOverride ?: inferIntervalMillis(candles)
+        val orderBookSeries = buildOrderBookSeries(candles, orderBookSnapshots)
+        val series = CandleSeries.from(candles, intervalMillis, orderBookSeries)
+
+        val normalizedConfluence = normalizePatternKeys(confluencePatterns)
+        if (normalizedConfluence.isEmpty()) {
+            if (printReport) println("ConfluenceBacktest: no usable patterns after normalization.")
+            return null
+        }
+
+        val backtestConfig = cfg.backtest
+        val eventStudyConfig = cfg.eventStudy
+        val profitGroupConfig = cfg.profitGroup
+        val signalConfig = cfg.signal
+
+        val horizonBars = barsFromMinutes(backtestConfig.horizonMinutes, intervalMillis)
+        val localLowLookbackBars =
+            barsFromMinutesOrZero(profitGroupConfig.localLowLookbackMinutes, intervalMillis)
+        val breakoutLookaheadBars = barsFromMinutes(backtestConfig.horizonMinutes, intervalMillis)
+
+        val confluenceLookbackMinutes =
+            if (confluenceConfig.lookbackMinutes <= 0) backtestConfig.horizonMinutes else confluenceConfig.lookbackMinutes
+        val confluenceLookbackBars = barsFromMinutesOrZero(confluenceLookbackMinutes, intervalMillis)
+
+        val ruleLookbackBars = barsFromMinutes(backtestConfig.lookbackMinutes, intervalMillis)
+
+        val minIndexNeeded = max(
+            max(eventStudyConfig.patternBars, eventStudyConfig.contextBars),
+            if (useRuleGate) (ruleLookbackBars + 1) else 1
+        ).coerceAtLeast(1)
+
+        val confluenceHit = BooleanArray(series.n) { false }
+        for (idx in minIndexNeeded until series.n) {
+            val key = buildKeyBundle(
+                s = series,
+                entryIndex = idx,
+                patternBars = eventStudyConfig.patternBars,
+                contextBars = eventStudyConfig.contextBars
+            ) ?: continue
+            if (
+                normalizedConfluence.contains(key.fullKey) ||
+                normalizedConfluence.contains(key.seqWithLast) ||
+                normalizedConfluence.contains(key.seqOnly)
+            ) {
+                confluenceHit[idx] = true
+            }
+        }
+
+        val prefix = IntArray(series.n + 1)
+        for (i in 0 until series.n) {
+            prefix[i + 1] = prefix[i] + if (confluenceHit[i]) 1 else 0
+        }
+
+        fun confluenceCountBefore(entryIndex: Int): Int {
+            if (confluenceLookbackBars <= 0) return 0
+            val end = (entryIndex - 1).coerceAtLeast(0)
+            val start = (entryIndex - confluenceLookbackBars).coerceAtLeast(0)
+            if (end < start) return 0
+            return prefix[end + 1] - prefix[start]
+        }
+
+        val entryShiftForKey = if (timingMode == TimingMode.TRADABLE_NEXT_OPEN) 1 else 0
+        val minSignalIndex = (minIndexNeeded - entryShiftForKey).coerceAtLeast(1)
+        val maxSignalIndexExclusive = (series.n - 1).coerceAtLeast(minSignalIndex)
+
+        val indices = IntArrayList()
+        for (signalIndex in minSignalIndex until maxSignalIndexExclusive) {
+            val localLowIndex = if (entryShiftForKey == 1) signalIndex else signalIndex + entryShiftForKey
+
+            if (localLowLookbackBars > 0 && !isLocalLow(series, localLowIndex, localLowLookbackBars)) continue
+            if (profitGroupConfig.requireContinuous &&
+                !isContinuousWindow(series, localLowIndex, horizonBars, intervalMillis)
+            ) {
+                continue
+            }
+
+            val confluenceCount = confluenceCountBefore(localLowIndex)
+            if (confluenceCount < confluenceConfig.minMatches) continue
+
+            val entryLow = series.low[localLowIndex]
+            if (!entryLow.isFinite() || entryLow <= 0.0) continue
+
+            val threshold = entryLow * (1.0 + confluenceConfig.breakoutBufferPct)
+            val trigger = findBreakoutTriggerIndex(
+                s = series,
+                startIndex = localLowIndex,
+                maxLookaheadBars = breakoutLookaheadBars,
+                threshold = threshold,
+                requireCloseAbove = confluenceConfig.breakoutRequireCloseAbove
+            ) ?: continue
+
+            val entryIndex = if (timingMode == TimingMode.TRADABLE_NEXT_OPEN) trigger + 1 else trigger
+            if (entryIndex < 0 || entryIndex >= series.n) continue
+
+            val last = entryIndex + horizonBars - 1
+            if (last >= series.n) continue
+
+            if (useRuleGate) {
+                val f = series.featuresAt(entryIndex, ruleLookbackBars) ?: continue
+                if (!shouldEnter(f, signalConfig, cfg.orderBook)) continue
+            }
+
+            indices.add(entryIndex)
+        }
+
+        if (indices.size() == 0) {
+            if (printReport) {
+                println("ConfluenceBacktest: no entries after gating.")
+            }
+            return null
+        }
+
+        val label = "confluence(${normalizedConfluence.size})"
+        val rows = printPatternTableForTp(
+            s = series,
+            indicesByPattern = mapOf(label to indices),
+            tpPct = backtestConfig.takeProfit * 100.0,
+            horizonBars = horizonBars,
+            stopLossPct = backtestConfig.stopLoss * 100.0,
+            maxDrawdownPctAllowed = profitGroupConfig.maxDrawdownAllowed * 100.0,
+            feePerSide = backtestConfig.feePerSide,
+            slippagePerSide = backtestConfig.slippagePerSide,
+            timingMode = timingMode,
+            entryPriceMode = entryPriceMode,
+            allowOverlappingTrades = backtestConfig.allowOverlappingTrades,
+            worstCaseIfBothHitSameCandle = backtestConfig.worstCaseIfBothHit,
+            printReport = printReport,
+            foldStartIndex = minSignalIndex,
+            foldCount = eventStudyConfig.stabilityFolds,
+            minPosPerFold = eventStudyConfig.minPosPerFold,
+            minNetEdge = eventStudyConfig.minNetEdge
+        )
+
+        return rows.firstOrNull()
+    }
+
     private data class PatternQuery(
         val normalizedKey: String,  // e.g. "seq=R2.R2.R1|ret=DN2|rng=L|vol=b|last=N"
         val seqKey: String,         // e.g. "seq=R2.R2.R1"
@@ -193,6 +350,16 @@ object SignalBacktester {
             vol = vol,
             specificity = specificity
         )
+    }
+
+    private fun normalizePatternKeys(patterns: Collection<String>): Set<String> {
+        if (patterns.isEmpty()) return emptySet()
+        val out = HashSet<String>(patterns.size * 2)
+        for (p in patterns) {
+            val q = parsePatternQuery(p) ?: continue
+            out.add(q.normalizedKey)
+        }
+        return out
     }
 
     private data class KeyBundle(
@@ -478,6 +645,21 @@ object SignalBacktester {
         val start = (entryIndex - lookbackBars).coerceAtLeast(0)
         for (i in start until entryIndex) {
             if (s.low[i] < lowNow) return false
+        }
+        return true
+    }
+
+    private fun isContinuousWindow(
+        s: CandleSeries,
+        startIndex: Int,
+        horizonBars: Int,
+        intervalMillis: Long
+    ): Boolean {
+        if (startIndex < 0 || startIndex + horizonBars >= s.n) return false
+        val t0 = s.openTime[startIndex]
+        for (k in 1..horizonBars) {
+            val expected = t0 + k * intervalMillis
+            if (s.openTime[startIndex + k] != expected) return false
         }
         return true
     }

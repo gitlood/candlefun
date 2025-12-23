@@ -1,10 +1,12 @@
 package com.example.network
 
 import com.example.network.interfaces.BinanceTestNetApiService
+import com.example.network.model.AccountInfo
 import com.example.network.model.TradeResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.ClientRequestException
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.statement.bodyAsText
@@ -62,5 +64,22 @@ internal class BinanceTestNetApiServiceImpl(
         }
 
         return response.body<TradeResponse>()
+    }
+
+    override suspend fun fetchAccountInfo(): AccountInfo {
+        val timestamp = Instant.now().toEpochMilli()
+        val queryString = "timestamp=$timestamp"
+        val signature = sign(queryString, secretKey)
+        val finalQueryString = "$queryString&signature=$signature"
+
+        val response = client.get("$baseUrl/account?$finalQueryString") {
+            header("X-MBX-APIKEY", apiKey)
+        }
+
+        if (!response.status.isSuccess()) {
+            throw ClientRequestException(response, response.bodyAsText())
+        }
+
+        return response.body<AccountInfo>()
     }
 }

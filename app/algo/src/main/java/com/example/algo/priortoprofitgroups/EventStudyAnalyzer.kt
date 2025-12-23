@@ -248,6 +248,46 @@ object EventStudyAnalyzer {
         )
     }
 
+    /**
+     * Full result helper for sweep/reporting use cases.
+     * Returns the computed result (and updates lastResult for compatibility).
+     */
+    fun analyzeForResult(
+        candles: List<Candle>,
+        breakoutGroups: List<BreakoutGroup>,
+        cfg: AlgoConfig,
+    ): EventStudyResult? {
+        val result = analyzeInternal(
+            candles = candles,
+            groups = breakoutGroups,
+            lookbackMinutes = cfg.backtest.horizonMinutes,
+            intervalMillis = cfg.backtest.intervalMillis,
+            negativeSampleEveryN = cfg.eventStudy.negativeSampleEveryN,
+            seed = cfg.eventStudy.seed,
+            patternBars = cfg.eventStudy.patternBars,
+            contextBarsForBaselines = cfg.eventStudy.contextBars,
+            topK = cfg.eventStudy.topK,
+            minPosCount = cfg.eventStudy.minPosCount,
+            maxNegatives = cfg.eventStudy.maxNegatives,
+            shouldPrint = cfg.eventStudy.printReport,
+            minNetEdge = cfg.eventStudy.minNetEdge,
+            embargoMinutes = cfg.eventStudy.embargoMinutes,
+            stabilityFolds = cfg.eventStudy.stabilityFolds,
+            minStableFolds = cfg.eventStudy.minStableFolds,
+            minPosPerFold = cfg.eventStudy.minPosPerFold,
+            maxFdr = cfg.eventStudy.maxFdr,
+            regimeMinBuckets = cfg.eventStudy.regimeMinBuckets,
+            regimeMinPosPerBucket = cfg.eventStudy.regimeMinPosPerBucket,
+            minNegSamplesToRun = cfg.eventStudy.minNegSamplesToRun,
+            minPosEventsToRun = cfg.eventStudy.minPosEventsToRun,
+            minDistinctFullKeysToRun = cfg.eventStudy.minDistinctFullKeysToRun
+        )
+        lastResult = result
+        return result
+    }
+
+    fun lastResultSnapshot(): EventStudyResult? = lastResult
+
     fun lastTopFullKeysByLift(limit: Int): List<String> {
         val r = lastResult ?: return emptyList()
         return r.topFullByLift

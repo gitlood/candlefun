@@ -158,6 +158,16 @@ data class OrderBookSignalConfig(
     val maxSpreadBps: Double = 15.0,
 )
 
+// ========================= CONFLUENCE CONFIG =========================
+data class ConfluenceConfig(
+    val enabled: Boolean = false,
+    /** 0 = use backtest.horizonMinutes */
+    val lookbackMinutes: Int = 0,
+    val minMatches: Int = 1,
+    val breakoutBufferPct: Double = 0.0005,
+    val breakoutRequireCloseAbove: Boolean = false,
+)
+
 // ========================= ALGO CONFIG =========================
 data class AlgoConfig(
     val profitGroup: ProfitGroupConfig = ProfitGroupConfig(),
@@ -165,15 +175,23 @@ data class AlgoConfig(
     val eventStudy: EventStudyConfig = EventStudyConfig(),
     val signal: SignalConfig = SignalConfig(),
     val orderBook: OrderBookSignalConfig = OrderBookSignalConfig(),
+    val confluence: ConfluenceConfig = ConfluenceConfig(),
 ) {
     fun id(): String =
         "TP=${pct(backtest.takeProfit)} SL=${pct(backtest.stopLoss)} HZ=${backtest.horizonMinutes}m " +
                 "DD=${pct(profitGroup.maxDrawdownAllowed)} LL=${profitGroup.localLowLookbackMinutes}m " +
                 "SG(ret30=${pct(signal.ret30mMin)} volZ>=${fmt(signal.volumeZMin)} contr<=${fmt(signal.contractionMax)} slope>=${fmt(signal.trendSlopeMin)}) " +
-                "OB(en=${orderBook.enabled} imb10>=${fmt(orderBook.minImbalance10)} spr<=${fmt(orderBook.maxSpreadBps)})"
+                "OB(en=${orderBook.enabled} imb10>=${fmt(orderBook.minImbalance10)} spr<=${fmt(orderBook.maxSpreadBps)})" +
+                confluenceSuffix()
 
     private fun pct(x: Double): String = "%.2f%%".format(x * 100.0)
     private fun fmt(x: Double): String = "%.2f".format(x)
+
+    private fun confluenceSuffix(): String {
+        if (!confluence.enabled) return ""
+        val lb = if (confluence.lookbackMinutes <= 0) backtest.horizonMinutes else confluence.lookbackMinutes
+        return " CF(lb=${lb}m min=${confluence.minMatches} buf=${pct(confluence.breakoutBufferPct)} close=${confluence.breakoutRequireCloseAbove})"
+    }
 }
 
 enum class ProfitGroupSort { TIME_ASC, GAIN_DESC, DRAWDOWN_ASC }

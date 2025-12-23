@@ -24,15 +24,25 @@ import kotlin.math.sqrt
  */
 class TradeBot(
     private val api: BinanceTestNetApiService,
-    val spec: BotSpec
+    val spec: BotSpec,
+    private val tradeLogger: TradeLogger = NoopTradeLogger
 ) {
     val cfg = spec.cfg
     val patterns: Set<String> = normalizePatterns(spec.patterns.toList())
 
     var consoleColorCode: Int = 37 // default white
 
-    data class LongPos(val entryTime: Long, val entryPrice: Double)
+    data class LongPos(val entryTime: Long, val entryPrice: Double, val pattern: String)
     val openPositions = ArrayList<LongPos>(spec.trade.maxOpenPositions)
+
+    private data class PendingBreakout(
+        val lowIndex: Int,
+        val lowPrice: Double,
+        val patternKey: String,
+        val expiresAtIndex: Int
+    )
+
+    private var pendingBreakout: PendingBreakout? = null
 
     // ✅ per-bot tracking (each bot processes each new candle once)
     private var lastProcessedOpenTime: Long = Long.MIN_VALUE
@@ -59,7 +69,7 @@ class TradeBot(
         val lookbackBars = TradeBotMath.barsFromMinutes(cfg.backtest.lookbackMinutes, intervalMillis)
         val patternBars = cfg.eventStudy.patternBars
         val contextBars = cfg.eventStudy.contextBars
-        val requiredBars = requiredBarsForWindow(lookbackBars, patternBars, contextBars)
+        val requiredBars = requiredBarsForWindow(lookbackBars, patternBars, contextBars, intervalMillis)
 
         if (sorted.size < requiredBars) {
             log("Not enough candles yet. have=${sorted.size} need=$requiredBars (lookback=$lookbackBars patternBars=$patternBars)")
@@ -74,16 +84,29 @@ class TradeBot(
 
         val exited = exitPositions(latest, lastClose)
         if (!exited) {
-            tryEnterPosition(
-                candles = recentCandles,
-                entryOpen = entryOpen,
-                lookbackBars = lookbackBars.coerceAtMost(recentCandles.size),
-                patternBars = patternBars.coerceAtMost(recentCandles.size),
-                contextBars = contextBars.coerceAtMost(recentCandles.size),
-                intervalMillis = intervalMillis,
-                currentTime = latest.openTime,
-                orderBookSnapshot = orderBookSnapshot
-            )
+            if (cfg.confluence.enabled) {
+                tryEnterConfluenceBreakout(
+                    candles = recentCandles,
+                    entryOpen = entryOpen,
+                    lookbackBars = lookbackBars.coerceAtMost(recentCandles.size),
+                    patternBars = patternBars.coerceAtMost(recentCandles.size),
+                    contextBars = contextBars.coerceAtMost(recentCandles.size),
+                    intervalMillis = intervalMillis,
+                    currentTime = latest.openTime,
+                    orderBookSnapshot = orderBookSnapshot
+                )
+            } else {
+                tryEnterPosition(
+                    candles = recentCandles,
+                    entryOpen = entryOpen,
+                    lookbackBars = lookbackBars.coerceAtMost(recentCandles.size),
+                    patternBars = patternBars.coerceAtMost(recentCandles.size),
+                    contextBars = contextBars.coerceAtMost(recentCandles.size),
+                    intervalMillis = intervalMillis,
+                    currentTime = latest.openTime,
+                    orderBookSnapshot = orderBookSnapshot
+                )
+            }
         }
     }
 
@@ -109,14 +132,150 @@ class TradeBot(
                 }
                 log("EXIT ✅ reason=$reason lastClose=$lastClose entry=${pos.entryPrice}")
 
-                if (spec.trade.mode == ExecutionMode.TESTNET) {
-                    api.createOrder(spec.trade.symbol, "SELL", "MARKET", spec.trade.quantity, null, null)
+                val exitPrice = if (spec.trade.mode == ExecutionMode.TESTNET) {
+                    val resp = api.createOrder(spec.trade.symbol, "SELL", "MARKET", spec.trade.quantity, null, null)
+                    resp.bestEffortPrice() ?: lastClose
+                } else {
+                    lastClose
                 }
+                val durationMs = latest.openTime - pos.entryTime
+                val netPct =
+                    if (pos.entryPrice > 0.0) (exitPrice / pos.entryPrice) - 1.0 else 0.0
+
+                tradeLogger.logExit(
+                    TradeExit(
+                        botName = spec.name,
+                        symbol = spec.trade.symbol,
+                        mode = spec.trade.mode,
+                        pattern = pos.pattern,
+                        reason = reason,
+                        entryTime = pos.entryTime,
+                        exitTime = latest.openTime,
+                        entryPrice = pos.entryPrice,
+                        exitPrice = exitPrice,
+                        netPct = netPct,
+                        durationMs = durationMs,
+                        quantity = spec.trade.quantity
+                    )
+                )
+
                 it.remove()
                 exited = true
             }
         }
         return exited
+    }
+
+    private suspend fun tryEnterConfluenceBreakout(
+        candles: List<Candle>,
+        entryOpen: Double,
+        lookbackBars: Int,
+        patternBars: Int,
+        contextBars: Int,
+        intervalMillis: Long,
+        currentTime: Long,
+        orderBookSnapshot: OrderBookSnapshot?
+    ) {
+        if (openPositions.size >= spec.trade.maxOpenPositions) {
+            log("Max open positions reached (${openPositions.size}). Skipping entry.")
+            return
+        }
+
+        val entryIndex = candles.lastIndex
+        val signalIndex = entryIndex - 1
+        if (signalIndex < 1) return
+
+        val confluenceCfg = cfg.confluence
+        val localLowLookbackBars = if (cfg.profitGroup.localLowLookbackMinutes <= 0) {
+            0
+        } else {
+            TradeBotMath.barsFromMinutes(cfg.profitGroup.localLowLookbackMinutes, intervalMillis)
+        }
+        val confluenceLookbackMinutes =
+            if (confluenceCfg.lookbackMinutes <= 0) cfg.backtest.horizonMinutes else confluenceCfg.lookbackMinutes
+        val confluenceLookbackBars = TradeBotMath.barsFromMinutes(confluenceLookbackMinutes, intervalMillis)
+        val horizonBars = TradeBotMath.barsFromMinutes(cfg.backtest.horizonMinutes, intervalMillis)
+
+        pendingBreakout?.let {
+            if (signalIndex > it.expiresAtIndex) {
+                log("Confluence breakout expired (idx=${it.lowIndex}).")
+                pendingBreakout = null
+            }
+        }
+
+        if (pendingBreakout == null && isLocalLow(candles, signalIndex, localLowLookbackBars)) {
+            val confluenceKey = findConfluenceKey(
+                candles = candles,
+                localLowIndex = signalIndex,
+                lookbackBars = confluenceLookbackBars,
+                patternBars = patternBars,
+                contextBars = contextBars
+            )
+            if (confluenceKey != null) {
+                val lowPrice = candles[signalIndex].low.toDoubleOrNull() ?: return
+                val expiresAt = signalIndex + horizonBars
+                pendingBreakout = PendingBreakout(signalIndex, lowPrice, confluenceKey, expiresAt)
+                log("Confluence local low ✅ idx=$signalIndex key=$confluenceKey")
+            }
+        }
+
+        val pending = pendingBreakout ?: return
+        if (signalIndex <= pending.lowIndex || signalIndex > pending.expiresAtIndex) return
+
+        val triggerPrice = pending.lowPrice * (1.0 + confluenceCfg.breakoutBufferPct)
+        val highNow = candles[signalIndex].high.toDoubleOrNull() ?: return
+        val closeNow = candles[signalIndex].close.toDoubleOrNull() ?: return
+        val breakoutHit = if (confluenceCfg.breakoutRequireCloseAbove) {
+            closeNow >= triggerPrice
+        } else {
+            highNow >= triggerPrice
+        }
+
+        if (!breakoutHit) return
+
+        val gate = passesSignalGate(
+            candles = candles,
+            signalIndex = signalIndex,
+            lookbackBars = lookbackBars,
+            intervalMillis = intervalMillis
+        )
+        log(
+            "Signal Gate -> ${if (gate.ok) "PASS ✅" else "FAIL ❌"} " +
+                "(ret30m=${fmt(gate.ret30m)} min=${fmt(gate.ret30mMax)} " +
+                "volumeZ=${fmt(gate.volumeZ)} min=${fmt(gate.volumeZMin)} " +
+                "contractionRatio=${fmt(gate.contractionRatio)} max=${fmt(gate.contractionRatioMax)} " +
+                "slope=${fmt(gate.trendSlope)} min=${fmt(gate.trendSlopeMin)})"
+        )
+
+        val orderBookOk = passesOrderBookGate(orderBookSnapshot)
+        log("OrderBook Gate -> ${if (orderBookOk) "PASS ✅" else "FAIL ❌"}")
+
+        if (!gate.ok || !orderBookOk) return
+
+        val fillPrice = if (spec.trade.mode == ExecutionMode.TESTNET) {
+            val resp = api.createOrder(spec.trade.symbol, "BUY", "MARKET", spec.trade.quantity, null, null)
+            resp.bestEffortPrice() ?: entryOpen
+        } else {
+            entryOpen
+        }
+
+        openPositions.add(LongPos(currentTime, fillPrice, pending.patternKey))
+        tradeLogger.logEntry(
+            TradeEntry(
+                botName = spec.name,
+                symbol = spec.trade.symbol,
+                mode = spec.trade.mode,
+                pattern = pending.patternKey,
+                entryTime = currentTime,
+                entryPrice = fillPrice,
+                quantity = spec.trade.quantity,
+                spreadBps = orderBookSnapshot?.let { if (it.midPrice > 0.0) (it.spread / it.midPrice) * 10_000.0 else null },
+                imbalance10 = orderBookSnapshot?.imbalance10,
+                candleOpenTime = candles[entryIndex].openTime
+            )
+        )
+        pendingBreakout = null
+        log("ENTERED LONG ✅ price=$fillPrice qty=${spec.trade.quantity} openPositions=${openPositions.size}")
     }
 
     private suspend fun tryEnterPosition(
@@ -178,7 +337,21 @@ class TradeBot(
             entryOpen
         }
 
-        openPositions.add(LongPos(currentTime, fillPrice))
+        openPositions.add(LongPos(currentTime, fillPrice, keys.fullKey))
+//        tradeLogger.logEntry(
+//            TradeEntry(
+//                botName = spec.name,
+//                symbol = spec.trade.symbol,
+//                mode = spec.trade.mode,
+//                pattern = keys.fullKey,
+//                entryTime = currentTime,
+//                entryPrice = fillPrice,
+//                quantity = spec.trade.quantity,
+//                spreadBps = orderBookSnapshot?.let { if (it.midPrice > 0.0) (it.spread / it.midPrice) * 10_000.0 else null },
+//                imbalance10 = orderBookSnapshot?.imbalance10,
+//                candleOpenTime = latest.openTime
+//            )
+     //   )
         log("ENTERED LONG ✅ price=$fillPrice qty=${spec.trade.quantity} openPositions=${openPositions.size}")
     }
 
@@ -318,6 +491,38 @@ class TradeBot(
         }.toHashSet()
     }
 
+    private fun findConfluenceKey(
+        candles: List<Candle>,
+        localLowIndex: Int,
+        lookbackBars: Int,
+        patternBars: Int,
+        contextBars: Int
+    ): String? {
+        if (lookbackBars <= 0) return null
+        val start = (localLowIndex - lookbackBars).coerceAtLeast(1)
+        for (idx in localLowIndex downTo start) {
+            val key = currentPatternKey(candles, idx, patternBars, contextBars) ?: continue
+            when {
+                patterns.contains(key.fullKey) -> return key.fullKey
+                patterns.contains(key.seqWithLast) -> return key.seqWithLast
+                patterns.contains(key.seqOnly) -> return key.seqOnly
+            }
+        }
+        return null
+    }
+
+    private fun isLocalLow(candles: List<Candle>, index: Int, lookbackBars: Int): Boolean {
+        if (lookbackBars <= 0) return true
+        if (index <= 0 || index >= candles.size) return false
+        val lowNow = candles[index].low.toDoubleOrNull() ?: return false
+        val start = (index - lookbackBars).coerceAtLeast(0)
+        for (i in start until index) {
+            val low = candles[i].low.toDoubleOrNull() ?: continue
+            if (low < lowNow) return false
+        }
+        return true
+    }
+
     // ----------------------- Signal Gate (BacktestFeatures semantics) -----------------------
 
     private data class Gate(
@@ -449,11 +654,25 @@ class TradeBot(
         return if (denom == 0.0) 0.0 else (nPts * sumXY - sumX * sumY) / denom
     }
 
-    private fun requiredBarsForWindow(lookbackBars: Int, patternBars: Int, contextBars: Int): Int {
+    private fun requiredBarsForWindow(
+        lookbackBars: Int,
+        patternBars: Int,
+        contextBars: Int,
+        intervalMillis: Long
+    ): Int {
         val minForPattern = patternBars + 2
         val minForContext = contextBars + 1
         val minForGate = lookbackBars + 1
-        return max(max(minForPattern, minForContext), minForGate).coerceAtLeast(2)
+        val confluenceLookbackMinutes =
+            if (cfg.confluence.enabled) {
+                if (cfg.confluence.lookbackMinutes <= 0) cfg.backtest.horizonMinutes else cfg.confluence.lookbackMinutes
+            } else {
+                0
+            }
+        val confluenceBars =
+            if (confluenceLookbackMinutes <= 0) 0 else TradeBotMath.barsFromMinutes(confluenceLookbackMinutes, intervalMillis)
+        val minForConfluence = confluenceBars + 1
+        return max(max(max(minForPattern, minForContext), minForGate), minForConfluence).coerceAtLeast(2)
     }
 
     private fun passesOrderBookGate(snapshot: OrderBookSnapshot?): Boolean {

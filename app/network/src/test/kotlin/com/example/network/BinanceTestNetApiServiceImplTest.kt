@@ -61,4 +61,45 @@ class BinanceTestNetApiServiceImplTest {
         val signature = method.invoke(service, "symbol=ETHUSDT&side=BUY", "secret") as String
         assertEquals(64, signature.length)
     }
+
+    @Test
+    fun binanceTestNetApiService_fetchesAccountInfo() = runBlocking {
+        val requests = mutableListOf<HttpRequestData>()
+        val engine = jsonMockEngine { request ->
+            requests.add(request)
+            val response = """{
+                "makerCommission":0,
+                "takerCommission":0,
+                "buyerCommission":0,
+                "sellerCommission":0,
+                "canTrade":true,
+                "canWithdraw":true,
+                "canDeposit":true,
+                "updateTime":1,
+                "accountType":"SPOT",
+                "balances":[{"asset":"USDT","free":"100.00","locked":"0.00"}],
+                "permissions":["SPOT"]
+            }"""
+            respond(
+                content = response,
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+        val mockClient = jsonMockClient(engine)
+
+        val service = BinanceTestNetApiServiceImpl(
+            client = mockClient,
+            apiKey = "key",
+            secretKey = "secret"
+        )
+
+        val account = service.fetchAccountInfo()
+        assertEquals(1, account.balances.size)
+        val req = requests.single()
+        assertEquals(HttpMethod.Get, req.method)
+        assertEquals("/api/v3/account", req.url.encodedPath)
+        assertTrue(req.url.parameters.contains("signature"))
+        assertEquals("key", req.headers["X-MBX-APIKEY"])
+    }
 }

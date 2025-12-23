@@ -1,6 +1,8 @@
 package com.example.tradebot
 
 import com.example.network.interfaces.BinanceTestNetApiService
+import com.example.network.model.AccountInfo
+import com.example.network.model.Balance
 import com.example.network.model.TradeResponse
 import com.example.platformutil.AlgoConfig
 import com.example.platformutil.BacktestConfig
@@ -124,6 +126,12 @@ class TradeBotExitConditionsTest {
                 clientOrderId = "cid",
                 transactTime = 1L,
                 price = "1.00"
+            )
+        }
+
+        override suspend fun fetchAccountInfo(): AccountInfo {
+            return AccountInfo(
+                balances = listOf(Balance(asset = "USDT", free = "1000", locked = "0"))
             )
         }
     }
