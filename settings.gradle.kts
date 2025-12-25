@@ -14,5 +14,10 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Candle Fun"
-include(":app")
-include(":app:network")
+include(":network")
+include(":platform")
+include(":marketdata-domain")
+include(":marketdata-impl")
+include(":execution-domain")
+include(":execution-impl")
+include(":features")

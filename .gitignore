@@ -21,3 +21,7 @@ build/
 stackeddca_data/exports/
 app/orderbookscalper/exports/
 app/orderbookscalper/*.csv
+/binance_candles.sqlite
+/binance_candles.sqlite-shm
+/binance_candles.sqlite-wal
+/network_module_dump.txt

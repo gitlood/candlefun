@@ -1,0 +1,30 @@
+package com.example.platform.model
+
+data class MarketState(
+    val symbol: String,
+    val timestampMs: Long,
+    val eventTimeMs: Long?,
+    val bestBidPrice: Double?,
+    val bestBidQty: Double?,
+    val bestAskPrice: Double?,
+    val bestAskQty: Double?,
+    val midPrice: Double?,
+    val spread: Double?,
+    val microPrice: Double?,
+    val depthImbalance: Double?,
+    val ofi1s: Double,
+    val tradeCount1s: Int,
+    val tradeVolume1s: Double,
+    val tradeImbalance1s: Double,
+    val lastTradePrice: Double?,
+    val lastTradeQty: Double?,
+    val lastTradeIsBuyerMaker: Boolean?,
+    val vol1s: Double?,
+    val vol5s: Double?,
+    val vol10s: Double?,
+    val vol1m: Double?,
+    val vol5m: Double?,
+    val bookUpdateId: Long,
+    val bidLevels: List<BookLevel>,
+    val askLevels: List<BookLevel>
+)

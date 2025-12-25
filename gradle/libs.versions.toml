@@ -1,10 +1,24 @@
 [versions]
 kotlin = "2.0.21"
-json = "2.15.+"
+ktor = "2.3.11"
+coroutines = "1.8.1"
+sqliteJdbc = "3.46.0.0"
+koin = "3.5.3"
+junit = "4.13.2"
+datetime = "0.6.0"
 
 [libraries]
-json = { group = "com.fasterxml.jackson.module", name="jackson-module-kotlin", version.ref = "json" }
-json-jsr310 = { group = "com.fasterxml.jackson.datatype", name="jackson-datatype-jsr310", version.ref = "json" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+ktor-client-websockets = { module = "io.ktor:ktor-client-websockets", version.ref = "ktor" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqliteJdbc" }
+koin-core = { module = "io.insert-koin:koin-core", version.ref = "koin" }
+junit = { module = "junit:junit", version.ref = "junit" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "datetime" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
