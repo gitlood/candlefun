@@ -1,8 +1,10 @@
-package com.example.execution.impl.inventory
+package com.example.account.impl.inventory
 
-import com.example.execution.domain.inventory.InventoryFill
-import com.example.execution.domain.inventory.InventoryPosition
-import com.example.execution.domain.inventory.InventoryStateRepository
+import com.example.account.domain.Price
+import com.example.account.domain.Symbol
+import com.example.account.domain.inventory.InventoryFill
+import com.example.account.domain.inventory.InventoryPosition
+import com.example.account.domain.inventory.InventoryStateRepository
 import com.example.network.futures.interfaces.FuturesUserDataService
 import com.example.network.futures.interfaces.FuturesWebSocketService
 import kotlinx.coroutines.CoroutineScope
@@ -42,14 +44,14 @@ class FuturesUserStreamInventoryBridgeTest {
         assertEquals(1, userDataService.createCalls)
         assertEquals("listen-key", wsService.lastListenKey)
         assertEquals(1, inventory.fills.size)
-        assertEquals("BTCUSDT", inventory.fills[0].asset)
-        assertEquals(0.5, inventory.fills[0].signedQty, 0.0)
-        assertEquals(100.0, inventory.fills[0].price, 0.0)
+        assertEquals("BTCUSDT", inventory.fills[0].symbol.value)
+        assertEquals(0.5, inventory.fills[0].signedQty.toDouble(), 0.0)
+        assertEquals(100.0, inventory.fills[0].price.value.toDouble(), 0.0)
 
         assertEquals(1, inventory.positions.size)
-        assertEquals("BTCUSDT", inventory.positions[0].asset)
-        assertEquals(0.1, inventory.positions[0].quantity, 0.0)
-        assertEquals(200.0, inventory.positions[0].avgPrice, 0.0)
+        assertEquals("BTCUSDT", inventory.positions[0].symbol.value)
+        assertEquals(0.1, inventory.positions[0].quantity.toDouble(), 0.0)
+        assertEquals(200.0, inventory.positions[0].avgPrice.value.toDouble(), 0.0)
 
         scope.coroutineContext.cancel()
     }
@@ -76,9 +78,9 @@ class FuturesUserStreamInventoryBridgeTest {
         }
 
         assertEquals(1, inventory.fills.size)
-        assertTrue(inventory.fills[0].signedQty < 0.0)
-        assertEquals(-1.0, inventory.fills[0].signedQty, 0.0)
-        assertEquals(10.0, inventory.fills[0].price, 0.0)
+        assertTrue(inventory.fills[0].signedQty.toDouble() < 0.0)
+        assertEquals(-1.0, inventory.fills[0].signedQty.toDouble(), 0.0)
+        assertEquals(10.0, inventory.fills[0].price.value.toDouble(), 0.0)
 
         scope.coroutineContext.cancel()
     }
@@ -97,6 +99,9 @@ class FuturesUserStreamInventoryBridgeTest {
 
         override suspend fun applyPositionSnapshot(positions: List<InventoryPosition>) {
             this.positions = positions
+        }
+
+        override suspend fun applyMarkPrice(symbol: Symbol, markPrice: Price, timestampMs: Long) {
         }
 
         override suspend fun persist() {

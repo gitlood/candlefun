@@ -109,7 +109,7 @@ fun MyTradeDto.toDomain(): Trade = Trade(
     price = parseDoubleStrict(price, "myTrade.price"),
     quantity = parseDoubleStrict(quantity, "myTrade.quantity"),
     timestamp = time,
-    isBuyerMaker = isBuyer && isMaker
+    isBuyerMaker = isBuyer == isMaker
 )
 
 private fun parseDoubleStrict(value: String, field: String): Double {

@@ -3,8 +3,10 @@ package com.example.network.marketstate
 import java.util.ArrayDeque
 import kotlin.math.ln
 import kotlin.math.sqrt
+import kotlin.time.Duration
 
-internal class RollingSumWindow(private val windowMs: Long) {
+internal class RollingSumWindow(window: Duration) {
+    private val windowMs = window.inWholeMilliseconds
     private val values = ArrayDeque<TimedDouble>(128)
     private var sum = 0.0
 
@@ -29,7 +31,8 @@ internal class RollingSumWindow(private val windowMs: Long) {
     private data class TimedDouble(val timestampMs: Long, val value: Double)
 }
 
-internal class RollingTradeWindow(private val windowMs: Long) {
+internal class RollingTradeWindow(window: Duration) {
+    private val windowMs = window.inWholeMilliseconds
     private val trades = ArrayDeque<TradeSample>(256)
     private var totalQty = 0.0
     private var buyQty = 0.0
@@ -78,8 +81,8 @@ internal data class TradeWindowSnapshot(
     val sellVolume: Double
 )
 
-internal class RollingVolatility(windowMs: List<Long>) {
-    private val windows = windowMs.distinct().sorted().map { VolWindow(it) }
+internal class RollingVolatility(windowMs: List<Duration>) {
+    private val windows = windowMs.distinct().sorted().map { VolWindow(it.inWholeMilliseconds) }
     private var lastPrice: Double? = null
 
     fun addPrice(timestampMs: Long, price: Double) {
@@ -91,7 +94,8 @@ internal class RollingVolatility(windowMs: List<Long>) {
         windows.forEach { it.add(timestampMs, ret) }
     }
 
-    fun sigma(windowMs: Long, timestampMs: Long): Double? {
+    fun sigma(window: Duration, timestampMs: Long): Double? {
+        val windowMs = window.inWholeMilliseconds
         return windows.firstOrNull { it.windowMs == windowMs }?.sigma(timestampMs)
     }
 

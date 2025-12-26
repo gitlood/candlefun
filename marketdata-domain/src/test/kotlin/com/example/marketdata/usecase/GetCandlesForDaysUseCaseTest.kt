@@ -1,5 +1,6 @@
 package com.example.marketdata.usecase
 
+import com.example.marketdata.model.Symbol
 import com.example.marketdata.repository.CandleHistoryRepository
 import com.example.platform.model.CandleHistoryItem
 import com.example.platform.util.Clock
@@ -20,9 +21,10 @@ class GetCandlesForDaysUseCaseTest {
 
             useCase("btcusdt", days = 2)
 
-            assertEquals("BTCUSDT", repo.lastSymbol)
+            assertEquals("BTCUSDT", repo.lastSymbol?.value)
             val expectedFrom = 10_000L - 2L * 24L * 60L * 60L * 1000L
             assertEquals(expectedFrom, repo.lastFrom)
+            assertEquals(10_000L, repo.lastTo)
         }
     }
 
@@ -34,16 +36,28 @@ class GetCandlesForDaysUseCaseTest {
         }
     }
 
-    private class RecordingRepo : CandleHistoryRepository {
-        var lastSymbol: String? = null
-        var lastFrom: Long? = null
+    @Test(expected = IllegalArgumentException::class)
+    fun `invoke rejects excessively large ranges`() {
+        runBlocking {
+            val useCase = GetCandlesForDaysUseCase(RecordingRepo())
+            useCase("BTCUSDT", days = 10_000)
+        }
+    }
 
-        override suspend fun getCandlesFrom(
-            symbol: String,
-            fromOpenTimeInclusive: Long
+    private class RecordingRepo : CandleHistoryRepository {
+        var lastSymbol: Symbol? = null
+        var lastFrom: Long? = null
+        var lastTo: Long? = null
+
+        override suspend fun getCandles(
+            symbol: Symbol,
+            fromOpenTimeInclusive: Long,
+            toOpenTimeExclusive: Long?,
+            limit: Int?
         ): List<CandleHistoryItem> {
             lastSymbol = symbol
             lastFrom = fromOpenTimeInclusive
+            lastTo = toOpenTimeExclusive
             return emptyList()
         }
     }

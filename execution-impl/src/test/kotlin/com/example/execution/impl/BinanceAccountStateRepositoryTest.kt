@@ -1,7 +1,8 @@
 package com.example.execution.impl
 
-import com.example.execution.domain.BalanceSnapshot
-import com.example.execution.domain.Fill
+import com.example.account.domain.BalanceSnapshot
+import com.example.account.domain.Fill
+import com.example.account.domain.Symbol
 import com.example.network.interfaces.BinanceTestNetApiService
 import com.example.platform.model.Account
 import com.example.platform.model.AccountBalance
@@ -23,8 +24,8 @@ class BinanceAccountStateRepositoryTest {
             val balances: List<BalanceSnapshot> = repo.getBalances()
 
             assertEquals(2, balances.size)
-            assertEquals("USDT", balances[0].asset)
-            assertEquals(10.0, balances[0].free, 0.0)
+            assertEquals("USDT", balances[0].asset.value)
+            assertEquals(10.0, balances[0].free.toDouble(), 0.0)
         }
     }
 
@@ -34,11 +35,11 @@ class BinanceAccountStateRepositoryTest {
             val api = FakeApi()
             val repo = BinanceAccountStateRepository(api)
 
-            val fills: List<Fill> = repo.getFills("BTCUSDT", sinceMs = 100L)
+            val fills: List<Fill> = repo.getFills(Symbol.of("BTCUSDT"), sinceTimeMs = 100L)
 
             assertEquals(1, fills.size)
-            assertEquals("BTCUSDT", fills[0].symbol)
-            assertEquals(100.0, fills[0].price, 0.0)
+            assertEquals("BTCUSDT", fills[0].symbol.value)
+            assertEquals(100.0, fills[0].price.value.toDouble(), 0.0)
         }
     }
 

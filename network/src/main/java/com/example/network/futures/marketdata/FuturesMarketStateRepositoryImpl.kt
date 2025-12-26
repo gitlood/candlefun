@@ -1,6 +1,7 @@
 package com.example.network.futures.marketdata
 
 import com.example.marketdata.model.MarketStateConfig
+import com.example.marketdata.model.Symbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
 import com.example.network.futures.FuturesOrderBookAdapter
 import com.example.network.futures.interfaces.FuturesOrderBookService
@@ -25,7 +26,7 @@ internal class FuturesMarketStateRepositoryImpl(
     )
 
     override fun streamMarketState(
-        symbols: List<String>,
+        symbols: List<Symbol>,
         config: MarketStateConfig
     ): Flow<MarketState> {
         return delegate.streamMarketState(symbols, config)

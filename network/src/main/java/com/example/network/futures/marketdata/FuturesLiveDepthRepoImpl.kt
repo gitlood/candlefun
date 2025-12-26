@@ -5,11 +5,13 @@ import com.example.network.futures.interfaces.FuturesLiveDepthRepo
 import com.example.network.futures.interfaces.FuturesWebSocketService
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.mapNotNull
+import kotlin.time.Duration
 
 internal class FuturesLiveDepthRepoImpl(
     private val ws: FuturesWebSocketService
 ) : FuturesLiveDepthRepo {
-    override fun streamDepthUpdates(symbols: List<String>, speedMs: Int): Flow<WsDepthUpdateData> {
+    override fun streamDepthUpdates(symbols: List<String>, speed: Duration): Flow<WsDepthUpdateData> {
+        val speedMs = speed.inWholeMilliseconds
         val streams = symbols.map { "${it.lowercase()}@depth@${speedMs}ms" }
         return ws.connect(streams)
             .mapNotNull { env ->

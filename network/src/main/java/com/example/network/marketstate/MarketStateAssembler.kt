@@ -21,6 +21,13 @@ internal class MarketStateAssembler(
         }
     }
 
+    suspend fun startDepthResync(symbol: String) {
+        val state = states[symbol] ?: return
+        state.lock.withLock {
+            state.depthSync.start()
+        }
+    }
+
     suspend fun onBookTicker(data: WsBookTickerData, nowMs: Long) {
         val symbol = data.symbol.uppercase()
         val state = states[symbol] ?: return
@@ -39,6 +46,20 @@ internal class MarketStateAssembler(
         val symbol = data.symbol.uppercase()
         val state = states[symbol] ?: return false
         val res = state.lock.withLock {
+            if (state.depthSync.isSyncing) {
+                state.depthSync.buffer(data)
+                val result = state.depthSync.tryApply(state.orderBook) { u, applyResult ->
+                    if (applyResult.ok) {
+                        val ts = u.eventTime ?: nowMs
+                        state.ofiWindow.add(ts, applyResult.ofiDelta)
+                        state.lastDepthEventTime = u.eventTime
+                    }
+                }
+                return@withLock when (result) {
+                    DepthSyncResult.MISSED_BRIDGE, DepthSyncResult.FAILED -> OrderBookUpdateResult(false, 0.0)
+                    else -> OrderBookUpdateResult(true, 0.0)
+                }
+            }
             val result = state.orderBook.applyUpdate(data)
             if (result.ok) {
                 state.ofiWindow.add(nowMs, result.ofiDelta)
@@ -64,7 +85,19 @@ internal class MarketStateAssembler(
     suspend fun onSnapshot(symbol: String, snapshot: OrderBook) {
         val state = states[symbol] ?: return
         state.lock.withLock {
-            state.orderBook.loadSnapshot(snapshot)
+            if (!state.depthSync.isSyncing) {
+                state.orderBook.loadSnapshot(snapshot)
+                return@withLock
+            }
+
+            state.depthSync.setSnapshot(snapshot)
+            state.depthSync.tryApply(state.orderBook) { u, applyResult ->
+                if (applyResult.ok) {
+                    val ts = u.eventTime ?: System.currentTimeMillis()
+                    state.ofiWindow.add(ts, applyResult.ofiDelta)
+                    state.lastDepthEventTime = u.eventTime
+                }
+            }
         }
     }
 

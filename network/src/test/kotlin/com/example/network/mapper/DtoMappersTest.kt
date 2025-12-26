@@ -207,4 +207,26 @@ class DtoMappersTest {
         assertEquals("LIMIT", domain.type)
         assertEquals("BUY", domain.side)
     }
+
+    @Test
+    fun `MyTradeDto toDomain derives isBuyerMaker`() {
+        val base = MyTradeDto(
+            symbol = "BTCUSDT",
+            tradeId = 1L,
+            orderId = 2L,
+            price = "100.0",
+            quantity = "0.1",
+            quoteQty = "10.0",
+            commission = "0.01",
+            commissionAsset = "BNB",
+            time = 123456L,
+            isBuyer = true,
+            isMaker = true,
+            isBestMatch = true
+        )
+
+        assertEquals(true, base.toDomain().isBuyerMaker)
+        assertEquals(false, base.copy(isMaker = false).toDomain().isBuyerMaker)
+        assertEquals(true, base.copy(isBuyer = false, isMaker = false).toDomain().isBuyerMaker)
+    }
 }

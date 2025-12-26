@@ -1,9 +1,14 @@
 package com.example.execution.impl
 
-import com.example.execution.domain.AccountStateRepository
+import com.example.account.domain.AccountStateRepository
+import com.example.account.domain.Asset
 import com.example.execution.domain.OrderCancelRequest
 import com.example.execution.domain.OrderRequest
-import com.example.execution.domain.Position
+import com.example.account.domain.Position
+import com.example.account.domain.Price
+import com.example.account.domain.Qty
+import com.example.account.domain.Symbol
+import com.example.execution.domain.TimeInForce
 import com.example.network.interfaces.BinanceTestNetApiService
 import com.example.platform.model.Account
 import com.example.platform.model.AccountBalance
@@ -24,12 +29,12 @@ class BinanceExecutionGatewayTest {
 
             val result = gateway.placeOrder(
                 OrderRequest(
-                    symbol = "BTCUSDT",
+                    symbol = Symbol.of("BTCUSDT"),
                     side = OrderSide.BUY,
                     type = OrderType.LIMIT,
-                    quantity = 1.5,
-                    price = 100.0,
-                    timeInForce = "GTC",
+                    quantity = Qty.fromDouble(1.5),
+                    price = Price.fromDouble(100.0),
+                    timeInForce = TimeInForce.GTC,
                     clientOrderId = "cid"
                 )
             )
@@ -40,7 +45,7 @@ class BinanceExecutionGatewayTest {
             assertEquals(OrderSide.BUY, api.lastCreateSide)
             assertEquals(OrderType.LIMIT, api.lastCreateType)
 
-            assertEquals("BTCUSDT", result.symbol)
+            assertEquals("BTCUSDT", result.symbol.value)
             assertEquals(1L, result.orderId)
             assertEquals(OrderType.LIMIT, result.type)
             assertEquals(OrderSide.BUY, result.side)
@@ -53,7 +58,7 @@ class BinanceExecutionGatewayTest {
             val api = RecordingApi()
             val gateway = BinanceExecutionGateway(api, RecordingAccountStateRepo())
 
-            val result = gateway.cancelOrder(OrderCancelRequest(symbol = "BTCUSDT", orderId = 7L))
+            val result = gateway.cancelOrder(OrderCancelRequest(symbol = Symbol.of("BTCUSDT"), orderId = 7L))
 
             assertEquals("BTCUSDT", api.lastCancelSymbol)
             assertEquals(7L, api.lastCancelOrderId)
@@ -68,12 +73,12 @@ class BinanceExecutionGatewayTest {
             val gateway = BinanceExecutionGateway(api, RecordingAccountStateRepo())
 
             gateway.replaceOrder(
-                cancelRequest = OrderCancelRequest(symbol = "BTCUSDT", orderId = 9L),
+                cancelRequest = OrderCancelRequest(symbol = Symbol.of("BTCUSDT"), orderId = 9L),
                 newRequest = OrderRequest(
-                    symbol = "BTCUSDT",
+                    symbol = Symbol.of("BTCUSDT"),
                     side = OrderSide.SELL,
                     type = OrderType.MARKET,
-                    quantity = 2.0
+                    quantity = Qty.fromDouble(2.0)
                 )
             )
 
@@ -87,7 +92,7 @@ class BinanceExecutionGatewayTest {
             val api = RecordingApi()
             val gateway = BinanceExecutionGateway(api, RecordingAccountStateRepo())
 
-            val result = gateway.getOpenOrders("BTCUSDT")
+            val result = gateway.getOpenOrders(Symbol.of("BTCUSDT"))
 
             assertEquals(1, result.size)
             assertEquals(OrderSide.BUY, result[0].side)
@@ -99,19 +104,23 @@ class BinanceExecutionGatewayTest {
         kotlinx.coroutines.runBlocking {
             val accountRepo = object : AccountStateRepository {
                 override suspend fun getBalances() = listOf(
-                    com.example.execution.domain.BalanceSnapshot(asset = "USDT", free = 10.0, locked = 2.0)
+                    com.example.account.domain.BalanceSnapshot(
+                        asset = Asset.of("USDT"),
+                        free = Qty.fromDouble(10.0),
+                        locked = Qty.fromDouble(2.0)
+                    )
                 )
 
-                override suspend fun getFills(symbol: String, sinceMs: Long?) =
-                    emptyList<com.example.execution.domain.Fill>()
+                override suspend fun getFills(symbol: Symbol, sinceTimeMs: Long?) =
+                    emptyList<com.example.account.domain.Fill>()
             }
             val gateway = BinanceExecutionGateway(RecordingApi(), accountRepo)
 
             val positions: List<Position> = gateway.getPositions()
 
             assertEquals(1, positions.size)
-            assertEquals("USDT", positions[0].symbol)
-            assertEquals(12.0, positions[0].quantity, 0.0)
+            assertEquals("USDT", positions[0].symbol.value)
+            assertEquals(12.0, positions[0].quantity.toDouble(), 0.0)
         }
     }
 
@@ -213,9 +222,14 @@ class BinanceExecutionGatewayTest {
 
     private class RecordingAccountStateRepo : AccountStateRepository {
         override suspend fun getBalances() = listOf(
-            com.example.execution.domain.BalanceSnapshot(asset = "USDT", free = 1.0, locked = 2.0)
+            com.example.account.domain.BalanceSnapshot(
+                asset = Asset.of("USDT"),
+                free = Qty.fromDouble(1.0),
+                locked = Qty.fromDouble(2.0)
+            )
         )
 
-        override suspend fun getFills(symbol: String, sinceMs: Long?) = emptyList<com.example.execution.domain.Fill>()
+        override suspend fun getFills(symbol: Symbol, sinceTimeMs: Long?) =
+            emptyList<com.example.account.domain.Fill>()
     }
 }

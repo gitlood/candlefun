@@ -25,3 +25,6 @@ app/orderbookscalper/*.csv
 /binance_candles.sqlite-shm
 /binance_candles.sqlite-wal
 /network_module_dump.txt
+/marketdata_domain_dump.txt
+/execution_domain_dump.txt
+/avellaneda_wallet.csv

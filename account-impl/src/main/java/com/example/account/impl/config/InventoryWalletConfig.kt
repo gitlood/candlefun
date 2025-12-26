@@ -1,4 +1,4 @@
-package com.example.execution.impl.config
+package com.example.account.impl.config
 
 import java.io.File
 

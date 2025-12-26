@@ -1,9 +1,10 @@
 package com.example.network.marketstate
 
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration
 
 internal class SnapshotResyncer(
-    private val throttleMs: Long
+    private val throttle: Duration
 ) {
     private val states = ConcurrentHashMap<String, ResyncState>()
 
@@ -11,7 +12,7 @@ internal class SnapshotResyncer(
         val state = states.computeIfAbsent(symbol) { ResyncState() }
         synchronized(state) {
             if (state.inProgress) return false
-            if (nowMs - state.lastSnapshotAt < throttleMs) return false
+            if (nowMs - state.lastSnapshotAt < throttle.inWholeMilliseconds) return false
             state.inProgress = true
             return true
         }

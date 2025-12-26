@@ -1,13 +1,19 @@
 package com.example.execution.impl
 
-import com.example.execution.domain.AccountStateRepository
-import com.example.execution.domain.BalanceSnapshot
+import com.example.account.domain.AccountStateRepository
+import com.example.account.domain.Asset
+import com.example.account.domain.BalanceSnapshot
+import com.example.account.domain.Fill
+import com.example.account.domain.Position
+import com.example.account.domain.Price
+import com.example.account.domain.Qty
+import com.example.account.domain.Symbol
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.domain.ExecutionOrder
-import com.example.execution.domain.Fill
 import com.example.execution.domain.OrderCancelRequest
 import com.example.execution.domain.OrderRequest
-import com.example.execution.domain.Position
+import com.example.execution.domain.OrderStatus
+import com.example.execution.domain.TimeInForce
 import com.example.network.interfaces.BinanceTestNetApiService
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
@@ -18,31 +24,32 @@ class BinanceExecutionGateway(
 ) : ExecutionGateway {
     override suspend fun placeOrder(request: OrderRequest): ExecutionOrder {
         val response = api.createOrder(
-            symbol = request.symbol,
+            symbol = request.symbol.value,
             side = request.side,
             type = request.type,
-            quantity = request.quantity.toString(),
-            price = request.price?.toString(),
-            timeInForce = request.timeInForce
+            quantity = request.quantity.value.toPlainString(),
+            price = request.price?.value?.toPlainString(),
+            timeInForce = request.timeInForce?.name
         )
 
         return ExecutionOrder(
-            symbol = response.symbol,
+            symbol = Symbol.of(response.symbol),
             orderId = response.orderId,
             clientOrderId = response.clientOrderId,
-            price = response.price,
-            originalQty = response.origQty,
-            executedQty = response.executedQty,
-            status = response.status,
+            price = Price.fromDouble(response.price),
+            originalQty = Qty.fromDouble(response.origQty),
+            executedQty = Qty.fromDouble(response.executedQty),
+            status = OrderStatus.fromString(response.status),
             type = OrderType.valueOf(response.type),
             side = OrderSide.valueOf(response.side),
-            transactTime = response.transactTime
+            timeInForce = TimeInForce.fromString(response.timeInForce),
+            transactTimeMs = response.transactTime
         )
     }
 
     override suspend fun cancelOrder(request: OrderCancelRequest): ExecutionOrder {
         val response = api.cancelOrder(
-            symbol = request.symbol,
+            symbol = request.symbol.value,
             orderId = request.orderId,
             clientOrderId = request.clientOrderId
         )
@@ -54,13 +61,17 @@ class BinanceExecutionGateway(
         return placeOrder(newRequest)
     }
 
-    override suspend fun getOpenOrders(symbol: String?): List<ExecutionOrder> {
-        return api.getOpenOrders(symbol).map { it.toExecutionOrder() }
+    override suspend fun getOpenOrders(symbol: Symbol?): List<ExecutionOrder> {
+        return api.getOpenOrders(symbol?.value).map { it.toExecutionOrder() }
     }
 
     override suspend fun getPositions(): List<Position> {
         return accountStateRepository.getBalances().map { bal ->
-            Position(symbol = bal.asset, quantity = bal.free + bal.locked, averagePrice = 0.0)
+            Position(
+                symbol = Symbol.of(bal.asset.value),
+                quantity = bal.free + bal.locked,
+                averagePrice = Price.ZERO
+            )
         }
     }
 }
@@ -71,18 +82,22 @@ class BinanceAccountStateRepository(
     override suspend fun getBalances(): List<BalanceSnapshot> {
         val info = api.fetchAccountInfo()
         return info.balances.map { bal ->
-            BalanceSnapshot(asset = bal.asset, free = bal.free, locked = bal.locked)
+            BalanceSnapshot(
+                asset = Asset.of(bal.asset),
+                free = Qty.fromDouble(bal.free),
+                locked = Qty.fromDouble(bal.locked)
+            )
         }
     }
 
-    override suspend fun getFills(symbol: String, sinceMs: Long?): List<Fill> {
-        val trades = api.getMyTrades(symbol = symbol, startTime = sinceMs)
+    override suspend fun getFills(symbol: Symbol, sinceTimeMs: Long?): List<Fill> {
+        val trades = api.getMyTrades(symbol = symbol.value, startTime = sinceTimeMs)
         return trades.map { t ->
             Fill(
                 symbol = symbol,
-                price = t.price,
-                quantity = t.quantity,
-                timestamp = t.timestamp,
+                price = Price.fromDouble(t.price),
+                quantity = Qty.fromDouble(t.quantity),
+                fillTimeMs = t.timestamp,
                 isBuyerMaker = t.isBuyerMaker
             )
         }
@@ -91,15 +106,16 @@ class BinanceAccountStateRepository(
 
 private fun com.example.platform.model.OrderResponse.toExecutionOrder(): ExecutionOrder {
     return ExecutionOrder(
-        symbol = symbol,
+        symbol = Symbol.of(symbol),
         orderId = orderId,
         clientOrderId = clientOrderId,
-        price = price,
-        originalQty = origQty,
-        executedQty = executedQty,
-        status = status,
+        price = Price.fromDouble(price),
+        originalQty = Qty.fromDouble(origQty),
+        executedQty = Qty.fromDouble(executedQty),
+        status = OrderStatus.fromString(status),
         type = OrderType.valueOf(type),
         side = OrderSide.valueOf(side),
-        transactTime = transactTime
+        timeInForce = TimeInForce.fromString(timeInForce),
+        transactTimeMs = transactTime
     )
 }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 class FuturesLiveDepthRepoImplTest {
 
@@ -23,7 +24,7 @@ class FuturesLiveDepthRepoImplTest {
         }
         val repo = FuturesLiveDepthRepoImpl(service)
 
-        val results = repo.streamDepthUpdates(listOf("BTCUSDT"), speedMs = 100).toList()
+        val results = repo.streamDepthUpdates(listOf("BTCUSDT"), speed = 100.milliseconds).toList()
 
         assertEquals(1, results.size)
         assertEquals(100L, results[0].firstUpdateId)

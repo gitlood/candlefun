@@ -2,6 +2,7 @@ package com.example.network.marketstate
 
 import kotlin.math.ln
 import kotlin.math.sqrt
+import kotlin.time.Duration.Companion.milliseconds
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -11,7 +12,7 @@ class RollingStatsTest {
 
     @Test
     fun `rolling sum trims values outside window`() {
-        val window = RollingSumWindow(1_000L)
+        val window = RollingSumWindow(1_000.milliseconds)
         window.add(0L, 1.0)
         window.add(500L, 2.0)
         window.add(1_500L, 3.0)
@@ -22,7 +23,7 @@ class RollingStatsTest {
 
     @Test
     fun `rolling trade window tracks volumes`() {
-        val window = RollingTradeWindow(1_000L)
+        val window = RollingTradeWindow(1_000.milliseconds)
         window.add(0L, 1.0, isBuyerMaker = false)
         window.add(500L, 2.0, isBuyerMaker = true)
         window.add(1_500L, 3.0, isBuyerMaker = false)
@@ -37,12 +38,12 @@ class RollingStatsTest {
 
     @Test
     fun `rolling volatility returns sigma when enough data`() {
-        val vol = RollingVolatility(listOf(1_000L))
+        val vol = RollingVolatility(listOf(1_000.milliseconds))
         vol.addPrice(0L, 100.0)
         vol.addPrice(500L, 101.0)
         vol.addPrice(900L, 99.0)
 
-        val sigma = vol.sigma(1_000L, 900L)
+        val sigma = vol.sigma(1_000.milliseconds, 900L)
 
         val r1 = ln(101.0 / 100.0)
         val r2 = ln(99.0 / 101.0)
@@ -53,9 +54,9 @@ class RollingStatsTest {
 
     @Test
     fun `rolling volatility returns null when insufficient data`() {
-        val vol = RollingVolatility(listOf(1_000L))
+        val vol = RollingVolatility(listOf(1_000.milliseconds))
         vol.addPrice(0L, 100.0)
 
-        assertNull(vol.sigma(1_000L, 0L))
+        assertNull(vol.sigma(1_000.milliseconds, 0L))
     }
 }

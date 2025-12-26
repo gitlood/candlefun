@@ -1,6 +1,7 @@
 package com.example.execution.impl.di
 
-import com.example.execution.domain.AccountStateRepository
+import com.example.account.domain.AccountStateRepository
+import com.example.account.impl.di.accountImplModule
 import com.example.execution.domain.ExecutionCredentials
 import com.example.execution.domain.ExecutionCredentialsProvider
 import com.example.execution.domain.ExecutionGateway
@@ -62,7 +63,7 @@ class ExecutionImplModuleTest : KoinComponent {
 
         startKoin {
             allowOverride(true)
-            modules(executionImplModule, overrides)
+            modules(accountImplModule, executionImplModule, overrides)
         }
         try {
             assertNotNull(get<ExecutionGateway>())

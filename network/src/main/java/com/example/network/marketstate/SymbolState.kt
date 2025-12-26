@@ -8,9 +8,10 @@ import kotlinx.coroutines.sync.Mutex
 internal class SymbolState(config: MarketStateConfig) {
     val lock = Mutex()
     val orderBook = OrderBookTracker()
-    val ofiWindow = RollingSumWindow(config.ofiWindowMs)
-    val tradeWindow = RollingTradeWindow(config.tradeWindowMs)
-    val volatility = RollingVolatility(config.volWindowsMs)
+    val depthSync = DepthSyncState()
+    val ofiWindow = RollingSumWindow(config.ofiWindow)
+    val tradeWindow = RollingTradeWindow(config.tradeWindow)
+    val volatility = RollingVolatility(config.volWindows)
 
     var lastBookTicker: WsBookTickerData? = null
     var lastTrade: WsAggTradeData? = null

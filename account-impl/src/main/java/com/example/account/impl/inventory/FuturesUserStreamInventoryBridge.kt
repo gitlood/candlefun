@@ -1,8 +1,12 @@
-package com.example.execution.impl.inventory
+package com.example.account.impl.inventory
 
-import com.example.execution.domain.inventory.InventoryFill
-import com.example.execution.domain.inventory.InventoryPosition
-import com.example.execution.domain.inventory.InventoryStateRepository
+import com.example.account.domain.Money
+import com.example.account.domain.Price
+import com.example.account.domain.Qty
+import com.example.account.domain.Symbol
+import com.example.account.domain.inventory.InventoryFill
+import com.example.account.domain.inventory.InventoryPosition
+import com.example.account.domain.inventory.InventoryStateRepository
 import com.example.network.futures.dto.FuturesAccountUpdate
 import com.example.network.futures.dto.FuturesOrderTradeUpdate
 import com.example.network.futures.dto.FuturesUserDataEvent
@@ -46,12 +50,12 @@ class FuturesUserStreamInventoryBridge(
         val qty = o.lastFilledQty.toDoubleOrNull() ?: return
         if (qty <= 0.0) return
         val price = o.lastFilledPrice.toDoubleOrNull() ?: return
-        val signedQty = if (o.side.equals("BUY", ignoreCase = true)) qty else -qty
+        val signedQty = if (o.side.equals("BUY", ignoreCase = true)) Qty.fromDouble(qty) else -Qty.fromDouble(qty)
         inventory.applyFill(
             InventoryFill(
-                asset = o.symbol,
+                symbol = Symbol.of(o.symbol),
                 signedQty = signedQty,
-                price = price,
+                price = Price.fromDouble(price),
                 timestampMs = o.tradeTime
             )
         )
@@ -64,13 +68,13 @@ class FuturesUserStreamInventoryBridge(
             val realized = pos.accumulatedRealized.toDoubleOrNull() ?: 0.0
             val unrealized = pos.unrealizedPnl.toDoubleOrNull() ?: 0.0
             InventoryPosition(
-                asset = pos.symbol,
-                quantity = qty,
-                avgPrice = avg,
-                realizedPnl = realized,
-                unrealizedPnl = unrealized,
-                free = 0.0,
-                locked = 0.0
+                symbol = Symbol.of(pos.symbol),
+                quantity = Qty.fromDouble(qty),
+                avgPrice = Price.fromDouble(avg),
+                realizedPnl = Money.fromDouble(realized),
+                unrealizedPnl = Money.fromDouble(unrealized),
+                free = Qty.ZERO,
+                locked = Qty.ZERO
             )
         }
         inventory.applyPositionSnapshot(positions)

@@ -1,6 +1,7 @@
 package com.example.network.marketstate
 
 import com.example.marketdata.model.MarketStateConfig
+import com.example.marketdata.model.asSymbol
 import com.example.network.dto.WsAggTradeData
 import com.example.network.dto.WsBookTickerData
 import com.example.network.dto.WsDepthUpdateData
@@ -17,6 +18,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 
 class MarketStateRepositoryImplTest {
 
@@ -38,7 +41,7 @@ class MarketStateRepositoryImplTest {
             }
         }
         val depthRepo = object : LiveDepthRepo {
-            override fun streamDepthUpdates(symbols: List<String>, speedMs: Int): Flow<WsDepthUpdateData> = flow {
+            override fun streamDepthUpdates(symbols: List<String>, speed: Duration): Flow<WsDepthUpdateData> = flow {
                 emit(
                     WsDepthUpdateData(
                         symbol = "BTCUSDT",
@@ -85,10 +88,10 @@ class MarketStateRepositoryImplTest {
             orderBookService = orderBookService,
             clockMs = { 2_000L }
         )
-        val config = MarketStateConfig(tickMs = 1L, depthLevels = 1)
+        val config = MarketStateConfig(tick = 1.milliseconds, depthLevels = 1)
 
         val state = withTimeout(2_000L) {
-            repo.streamMarketState(listOf("btcusdt"), config).first()
+            repo.streamMarketState(listOf("btcusdt".asSymbol()), config).first()
         }
 
         assertEquals("BTCUSDT", state.symbol)

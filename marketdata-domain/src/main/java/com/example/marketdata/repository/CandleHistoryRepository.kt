@@ -1,13 +1,16 @@
 package com.example.marketdata.repository
 
+import com.example.marketdata.model.Symbol
 import com.example.platform.model.CandleHistoryItem
 
 interface CandleHistoryRepository {
     /**
-     * Return candles for `symbol` from `fromOpenTimeInclusive` (ms) to "now".
+     * Return candles for `symbol` between `fromOpenTimeInclusive` (ms) and `toOpenTimeExclusive` (ms).
      */
-    suspend fun getCandlesFrom(
-        symbol: String,
-        fromOpenTimeInclusive: Long
+    suspend fun getCandles(
+        symbol: Symbol,
+        fromOpenTimeInclusive: Long,
+        toOpenTimeExclusive: Long? = null,
+        limit: Int? = null
     ): List<CandleHistoryItem>
 }

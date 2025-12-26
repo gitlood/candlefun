@@ -1,5 +1,6 @@
 package com.example.marketdata.impl
 
+import com.example.marketdata.model.asSymbol
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -24,14 +25,14 @@ class SqliteCandleHistoryRepositoryTest {
     }
 
     @Test
-    fun `getCandlesFrom returns ordered rows and filters symbol`() = runBlocking {
+    fun `getCandles returns ordered rows and filters symbol`() = runBlocking {
         insertRow("BTCUSDT", "1m", 3000L)
         insertRow("BTCUSDT", "1m", 1000L)
         insertRow("BTCUSDT", "1m", 2000L)
         insertRow("ETHUSDT", "1m", 1500L)
 
         val repo = SqliteCandleHistoryRepository("jdbc:sqlite:$dbPath", interval = "1m")
-        val result = repo.getCandlesFrom("BTCUSDT", fromOpenTimeInclusive = 1500L)
+        val result = repo.getCandles("BTCUSDT".asSymbol(), fromOpenTimeInclusive = 1500L)
         repo.close()
 
         assertEquals(2, result.size)
@@ -40,12 +41,12 @@ class SqliteCandleHistoryRepositoryTest {
     }
 
     @Test
-    fun `getCandlesFrom respects interval`() = runBlocking {
+    fun `getCandles respects interval`() = runBlocking {
         insertRow("BTCUSDT", "1m", 1000L)
         insertRow("BTCUSDT", "5m", 1000L)
 
         val repo = SqliteCandleHistoryRepository("jdbc:sqlite:$dbPath", interval = "5m")
-        val result = repo.getCandlesFrom("BTCUSDT", fromOpenTimeInclusive = 0L)
+        val result = repo.getCandles("BTCUSDT".asSymbol(), fromOpenTimeInclusive = 0L)
         repo.close()
 
         assertEquals(1, result.size)
@@ -53,12 +54,31 @@ class SqliteCandleHistoryRepositoryTest {
     }
 
     @Test
-    fun `getCandlesFrom returns empty when no rows`() = runBlocking {
+    fun `getCandles returns empty when no rows`() = runBlocking {
         val repo = SqliteCandleHistoryRepository("jdbc:sqlite:$dbPath", interval = "1m")
-        val result = repo.getCandlesFrom("BTCUSDT", fromOpenTimeInclusive = 0L)
+        val result = repo.getCandles("BTCUSDT".asSymbol(), fromOpenTimeInclusive = 0L)
         repo.close()
 
         assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun `getCandles respects toOpenTimeExclusive and limit`() = runBlocking {
+        insertRow("BTCUSDT", "1m", 1000L)
+        insertRow("BTCUSDT", "1m", 2000L)
+        insertRow("BTCUSDT", "1m", 3000L)
+
+        val repo = SqliteCandleHistoryRepository("jdbc:sqlite:$dbPath", interval = "1m")
+        val result = repo.getCandles(
+            symbol = "BTCUSDT".asSymbol(),
+            fromOpenTimeInclusive = 0L,
+            toOpenTimeExclusive = 2500L,
+            limit = 1
+        )
+        repo.close()
+
+        assertEquals(1, result.size)
+        assertEquals(1000L, result[0].openTime)
     }
 
     private fun createTable() {

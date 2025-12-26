@@ -1,6 +1,6 @@
-package com.example.execution.impl.inventory
+package com.example.account.impl.inventory
 
-import com.example.execution.domain.inventory.CsvWalletRow
+import com.example.account.domain.inventory.CsvWalletRow
 
 import java.io.File
 

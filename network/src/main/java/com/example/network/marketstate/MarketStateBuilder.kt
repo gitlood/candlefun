@@ -2,6 +2,8 @@ package com.example.network.marketstate
 
 import com.example.marketdata.model.MarketStateConfig
 import com.example.platform.model.MarketState
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 internal class MarketStateBuilder(
     private val config: MarketStateConfig
@@ -25,11 +27,11 @@ internal class MarketStateBuilder(
         val tradeStats = state.tradeWindow.snapshot(nowMs)
         val tradeImbalance = tradeStats.buyVolume - tradeStats.sellVolume
 
-        val vol1s = state.volatility.sigma(1_000L, nowMs)
-        val vol5s = state.volatility.sigma(5_000L, nowMs)
-        val vol10s = state.volatility.sigma(10_000L, nowMs)
-        val vol1m = state.volatility.sigma(60_000L, nowMs)
-        val vol5m = state.volatility.sigma(300_000L, nowMs)
+        val vol1s = state.volatility.sigma(1.seconds, nowMs)
+        val vol5s = state.volatility.sigma(5.seconds, nowMs)
+        val vol10s = state.volatility.sigma(10.seconds, nowMs)
+        val vol1m = state.volatility.sigma(1.minutes, nowMs)
+        val vol5m = state.volatility.sigma(5.minutes, nowMs)
 
         val eventTime = maxOf(
             state.lastBookEventTime ?: 0L,

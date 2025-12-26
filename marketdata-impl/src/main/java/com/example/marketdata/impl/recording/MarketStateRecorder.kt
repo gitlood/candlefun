@@ -1,6 +1,7 @@
 package com.example.marketdata.impl.recording
 
 import com.example.marketdata.model.MarketStateConfig
+import com.example.marketdata.model.Symbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
 import com.example.marketdata.repository.MarketStateRepository
 import com.example.platform.model.MarketState
@@ -18,7 +19,7 @@ class MarketStateRecorder(
 
     fun startSpot(
         repo: MarketStateRepository,
-        symbols: List<String>,
+        symbols: List<Symbol>,
         config: MarketStateConfig = MarketStateConfig()
     ) {
         start(repo.streamMarketState(symbols, config))
@@ -26,7 +27,7 @@ class MarketStateRecorder(
 
     fun startFutures(
         repo: FuturesMarketStateRepository,
-        symbols: List<String>,
+        symbols: List<Symbol>,
         config: MarketStateConfig = MarketStateConfig()
     ) {
         start(repo.streamMarketState(symbols, config))

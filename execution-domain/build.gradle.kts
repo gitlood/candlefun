@@ -3,6 +3,7 @@ plugins {
 }
 
 dependencies {
+    implementation(project(":account-domain"))
     implementation(project(":platform"))
     implementation(libs.kotlinx.coroutines.core)
     testImplementation(kotlin("test"))

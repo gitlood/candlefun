@@ -3,12 +3,13 @@ package com.example.network.marketstate
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 class SnapshotResyncerTest {
 
     @Test
     fun `tryStart respects in progress and throttle`() {
-        val resyncer = SnapshotResyncer(throttleMs = 1_000L)
+        val resyncer = SnapshotResyncer(1_000.milliseconds)
 
         assertTrue(resyncer.tryStart("BTCUSDT", 1_000L))
         assertFalse(resyncer.tryStart("BTCUSDT", 1_000L))
