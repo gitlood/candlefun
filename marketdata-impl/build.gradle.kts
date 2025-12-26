@@ -8,4 +8,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.sqlite.jdbc)
     implementation(libs.koin.core)
+    testImplementation(kotlin("test"))
+    testImplementation(libs.junit)
 }
