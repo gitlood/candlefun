@@ -28,3 +28,4 @@ app/orderbookscalper/*.csv
 /marketdata_domain_dump.txt
 /execution_domain_dump.txt
 /avellaneda_wallet.csv
+/marketstate.csv

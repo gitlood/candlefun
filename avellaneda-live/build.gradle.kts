@@ -1,11 +1,17 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
-    alias(libs.plugins.kotlin.serialization)
     application
 }
 
 application {
-    mainClass.set("com.example.avellaneda.AvellanedaMmBacktestRunner")
+    mainClass.set("com.example.avellaneda.AvellanedaMmLiveRunner")
+}
+
+tasks.register<JavaExec>("runTestnet") {
+    group = "application"
+    description = "Run Avellaneda MM with testnet execution."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.example.avellaneda.AvellanedaMmTestnetRunner")
 }
 
 dependencies {
@@ -16,5 +22,8 @@ dependencies {
     implementation(project(":marketdata-impl"))
     implementation(project(":execution-domain"))
     implementation(project(":execution-impl"))
+    implementation(project(":avellaneda-mm"))
+    implementation(project(":network"))
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.koin.core)
 }

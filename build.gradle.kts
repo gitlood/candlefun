@@ -48,3 +48,13 @@ tasks.register<JacocoReport>("jacocoRootReport") {
         csv.required.set(false)
     }
 }
+
+tasks.register("recordAndBacktest") {
+    group = "application"
+    description = "Record MarketState then run Avellaneda backtest."
+    dependsOn(":marketdata-impl:record", ":avellaneda-mm:run")
+    val backtest = project(":avellaneda-mm").tasks.named("run")
+    backtest.configure {
+        mustRunAfter(":marketdata-impl:record")
+    }
+}

@@ -10,6 +10,8 @@ import com.example.execution.domain.TimeInForce
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import java.math.BigDecimal
+import java.math.RoundingMode
 import kotlin.math.abs
 
 class AvellanedaMmStrategy(
@@ -19,6 +21,7 @@ class AvellanedaMmStrategy(
     private var lastActionMs: Long = 0L
     private var lastBidOrderId: Long? = null
     private var lastAskOrderId: Long? = null
+    private var lastGateReason: String? = null
 
     suspend fun onMarketState(state: MarketState) {
         if (state.symbol != config.symbol) return
@@ -29,11 +32,17 @@ class AvellanedaMmStrategy(
         val spread = state.spread ?: return
         if (spread <= 0.0) return
         val spreadPct = spread / mid
-        if (spreadPct < config.minSpreadPct) {
+        val gateReason = gateReason(state, spreadPct)
+        if (gateReason != null) {
+            if (config.logGateDecisions && gateReason != lastGateReason) {
+                println("gate=${config.symbol} reason=$gateReason")
+                lastGateReason = gateReason
+            }
             cancelAll()
             lastActionMs = now
             return
         }
+        lastGateReason = null
 
         val positionQty = gateway.getPositions()
             .firstOrNull { it.symbol.value == config.symbol }
@@ -83,13 +92,45 @@ class AvellanedaMmStrategy(
         lastActionMs = now
     }
 
+    private fun gateReason(state: MarketState, spreadPct: Double): String? {
+        if (spreadPct < config.minSpreadPct) return "spread_below_min"
+        val maxSpread = config.maxSpreadPct
+        if (maxSpread != null && spreadPct > maxSpread) return "spread_too_wide"
+
+        val imbalanceLimit = config.maxDepthImbalance
+        val imbalance = state.depthImbalance
+        if (imbalanceLimit != null && imbalance != null && abs(imbalance) > imbalanceLimit) {
+            return "depth_imbalance"
+        }
+
+        val minTopDepth = config.minTopDepth
+        if (minTopDepth != null) {
+            val bidDepth = state.bidLevels.sumOf { it.quantity }
+            val askDepth = state.askLevels.sumOf { it.quantity }
+            if (bidDepth + askDepth < minTopDepth) return "depth_collapse"
+        }
+
+        val maxVol1s = config.maxVol1s
+        if (maxVol1s != null && (state.vol1s ?: 0.0) > maxVol1s) return "vol_1s"
+        val maxVol5s = config.maxVol5s
+        if (maxVol5s != null && (state.vol5s ?: 0.0) > maxVol5s) return "vol_5s"
+        val maxVol10s = config.maxVol10s
+        if (maxVol10s != null && (state.vol10s ?: 0.0) > maxVol10s) return "vol_10s"
+
+        val maxTradeImb = config.maxTradeImbalance1s
+        if (maxTradeImb != null && state.tradeCount1s >= config.minTradeCount1sForToxicity) {
+            if (abs(state.tradeImbalance1s) > maxTradeImb) return "toxic_flow"
+        }
+        return null
+    }
+
     private suspend fun ensureOrder(
         side: OrderSide,
         price: Double,
         qty: Double,
         existingId: Long?,
         now: Long
-    ): Long? {
+    ): Long {
         val openOrders = gateway.getOpenOrders(Symbol.of(config.symbol)).filter { it.side == side }
         val existing = openOrders.firstOrNull { it.orderId == existingId } ?: openOrders.firstOrNull()
         val stale = existing != null && (now - existing.transactTimeMs) > config.maxQuoteAgeMs
@@ -102,13 +143,16 @@ class AvellanedaMmStrategy(
         }
 
         val roundedQty = roundDown(qty, config.qtyStep)
+        val finalQty = roundDown(applyMinNotional(roundedQty, price), config.qtyStep)
+        val priceStr = formatToStep(price, config.priceTick)
+        val qtyStr = formatToStep(finalQty, config.qtyStep)
         val placed = gateway.placeOrder(
             OrderRequest(
                 symbol = Symbol.of(config.symbol),
                 side = side,
                 type = OrderType.LIMIT,
-                quantity = Qty.fromDouble(roundedQty),
-                price = Price.fromDouble(price),
+                quantity = Qty.fromString(qtyStr),
+                price = Price.fromString(priceStr),
                 timeInForce = TimeInForce.GTC
             )
         )
@@ -135,5 +179,22 @@ class AvellanedaMmStrategy(
     private fun roundUp(value: Double, step: Double): Double {
         if (step <= 0.0) return value
         return kotlin.math.ceil(value / step) * step
+    }
+
+    private fun applyMinNotional(qty: Double, price: Double): Double {
+        val minNotional = config.minNotional ?: return qty
+        if (price <= 0.0) return qty
+        val required = minNotional / price
+        if (qty >= required) return qty
+        return roundUp(required, config.qtyStep)
+    }
+
+    private fun formatToStep(value: Double, step: Double): String {
+        if (step <= 0.0) return BigDecimal.valueOf(value).toPlainString()
+        val stepBd = BigDecimal.valueOf(step).stripTrailingZeros()
+        val scale = stepBd.scale().coerceAtLeast(0)
+        val units = BigDecimal.valueOf(value).divide(stepBd, 0, RoundingMode.DOWN)
+        val rounded = units.multiply(stepBd).setScale(scale, RoundingMode.DOWN)
+        return rounded.stripTrailingZeros().toPlainString()
     }
 }

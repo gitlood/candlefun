@@ -16,12 +16,20 @@ object AvellanedaMmBacktestRunner {
     fun main(args: Array<String>) = runBlocking {
         val inputPath = args.getOrNull(0)
             ?: System.getenv("MARKETSTATE_CSV")
-            ?: "marketstate.csv"
+            ?: defaultMarketStatePath()
         val symbolArg = args.getOrNull(1)
         val symbolsEnv = System.getenv("SYMBOLS")
         val speedup = args.getOrNull(2)?.toDoubleOrNull()
             ?: System.getenv("REPLAY_SPEEDUP")?.toDoubleOrNull()
             ?: 1.0
+
+        val inputFile = File(inputPath)
+        println("Backtest input: ${inputFile.absolutePath}")
+        println("Exists       : ${inputFile.exists()} sizeBytes=${if (inputFile.exists()) inputFile.length() else 0L}")
+        if (inputFile.exists()) {
+            val lineCount = inputFile.useLines { it.count() }
+            println("LineCount    : $lineCount")
+        }
 
         val replayer = MarketStateReplayer(File(inputPath), speedup = speedup)
         val accountRepo = SimAccountStateRepository()
@@ -38,7 +46,16 @@ object AvellanedaMmBacktestRunner {
                 priceTick = System.getenv("PRICE_TICK")?.toDoubleOrNull() ?: 0.01,
                 qtyStep = System.getenv("QTY_STEP")?.toDoubleOrNull() ?: 0.0001,
                 quoteRefreshMs = System.getenv("QUOTE_REFRESH_MS")?.toLongOrNull() ?: 500L,
-                maxQuoteAgeMs = System.getenv("MAX_QUOTE_AGE_MS")?.toLongOrNull() ?: 5_000L
+                maxQuoteAgeMs = System.getenv("MAX_QUOTE_AGE_MS")?.toLongOrNull() ?: 5_000L,
+                maxSpreadPct = System.getenv("MAX_SPREAD_PCT")?.toDoubleOrNull(),
+                minTopDepth = System.getenv("MIN_TOP_DEPTH")?.toDoubleOrNull(),
+                maxDepthImbalance = System.getenv("MAX_DEPTH_IMBALANCE")?.toDoubleOrNull(),
+                maxTradeImbalance1s = System.getenv("MAX_TRADE_IMBALANCE_1S")?.toDoubleOrNull(),
+                minTradeCount1sForToxicity = System.getenv("MIN_TRADE_COUNT_1S")?.toIntOrNull() ?: 5,
+                maxVol1s = System.getenv("MAX_VOL_1S")?.toDoubleOrNull(),
+                maxVol5s = System.getenv("MAX_VOL_5S")?.toDoubleOrNull(),
+                maxVol10s = System.getenv("MAX_VOL_10S")?.toDoubleOrNull(),
+                logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull() ?: false
             )
             AvellanedaMmStrategy(gateway, config)
         }
@@ -62,6 +79,20 @@ object AvellanedaMmBacktestRunner {
 
         inventoryRepo.persist()
         println("finished ticks=$ticks")
+    }
+
+    private fun defaultMarketStatePath(): String {
+        val root = findProjectRoot()
+        return File(root, "marketstate.csv").absolutePath
+    }
+
+    private fun findProjectRoot(): File {
+        var dir = File(System.getProperty("user.dir"))
+        while (true) {
+            if (File(dir, "settings.gradle.kts").exists()) return dir
+            val parent = dir.parentFile ?: return dir
+            dir = parent
+        }
     }
 
     private fun resolveSymbols(inputPath: String, symbolArg: String?, symbolsEnv: String?): List<String> {
