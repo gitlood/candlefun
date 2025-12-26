@@ -19,7 +19,10 @@ data class FillRecord(
     val fillTimeMs: Long
 )
 
-class ConservativeFillSimulator {
+class ConservativeFillSimulator(
+    private val queueBufferMultiplier: Double = 1.0,
+    private val maxDepthLevels: Int = 5
+) {
     fun matchFills(state: MarketState, openOrders: List<ExecutionOrder>): List<FillRecord> {
         val tradePrice = state.lastTradePrice ?: return emptyList()
         val tradeQty = state.lastTradeQty ?: return emptyList()
@@ -73,7 +76,7 @@ class ConservativeFillSimulator {
         val levels = when (side) {
             OrderSide.BUY -> state.bidLevels
             OrderSide.SELL -> state.askLevels
-        }
+        }.take(maxDepthLevels)
         if (levels.isEmpty()) return null
         val price = order.price.value.toDouble()
         val queueAhead = if (side == OrderSide.BUY) {
@@ -82,7 +85,8 @@ class ConservativeFillSimulator {
             sumLevels(levels) { level -> level.price < price }
         }
         val atLevel = levels.firstOrNull { it.price == price }?.quantity ?: 0.0
-        return queueAhead + atLevel
+        val buffer = if (queueBufferMultiplier > 0.0) atLevel * queueBufferMultiplier else 0.0
+        return queueAhead + atLevel + buffer
     }
 
     private fun sumLevels(levels: List<BookLevel>, predicate: (BookLevel) -> Boolean): Double {

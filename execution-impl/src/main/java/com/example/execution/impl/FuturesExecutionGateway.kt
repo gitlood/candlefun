@@ -23,15 +23,26 @@ class FuturesExecutionGateway(
     private val accountStateRepository: AccountStateRepository
 ) : ExecutionGateway {
     override suspend fun placeOrder(request: OrderRequest): ExecutionOrder {
-        val response = api.createOrder(
-            symbol = request.symbol.value,
-            side = request.side,
-            type = request.type,
-            quantity = request.quantity.value.toPlainString(),
-            price = request.price?.value?.toPlainString(),
-            timeInForce = request.timeInForce?.name
-        )
-        return response.toExecutionOrder()
+        return try {
+            val response = api.createOrder(
+                symbol = request.symbol.value,
+                side = request.side,
+                type = request.type,
+                quantity = request.quantity.value.toPlainString(),
+                price = request.price?.value?.toPlainString(),
+                timeInForce = request.timeInForce?.name,
+                reduceOnly = null,
+                clientOrderId = request.clientOrderId
+            )
+            response.toExecutionOrder()
+        } catch (e: Exception) {
+            val msg = e.message.orEmpty()
+            val timeout = msg.contains("-1007") || msg.contains("Timeout waiting for response")
+            if (!timeout || request.clientOrderId.isNullOrBlank()) throw e
+            val open = api.getOpenOrders(request.symbol.value)
+            val matched = open.firstOrNull { it.clientOrderId == request.clientOrderId }
+            matched?.toExecutionOrder() ?: throw e
+        }
     }
 
     override suspend fun cancelOrder(request: OrderCancelRequest): ExecutionOrder {

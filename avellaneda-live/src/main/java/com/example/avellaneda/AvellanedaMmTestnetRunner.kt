@@ -1,15 +1,21 @@
 package com.example.avellaneda
 
 import com.example.account.domain.AccountStateRepository
+import com.example.account.domain.Price
 import com.example.account.domain.Symbol
+import com.example.account.domain.inventory.InventoryFill
+import com.example.account.impl.config.InventoryWalletConfig
+import com.example.account.impl.di.accountImplModule
+import com.example.account.impl.inventory.CsvInventoryStateRepository
+import com.example.account.impl.inventory.CsvWalletStore
+import com.example.avellaneda.metrics.AdverseSelectionTracker
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.impl.EnvExecutionCredentialsProvider
 import com.example.execution.impl.di.executionImplModule
-import com.example.account.impl.di.accountImplModule
 import com.example.marketdata.model.MarketStateConfig
+import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
 import com.example.marketdata.repository.MarketStateRepository
-import com.example.marketdata.model.asSymbol
 import com.example.network.BinanceUniverse
 import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
@@ -18,11 +24,10 @@ import com.example.network.futures.interfaces.FuturesExchangeInfoService
 import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
-import org.koin.core.qualifier.named
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
+import org.koin.core.qualifier.named
 import kotlin.time.Duration.Companion.milliseconds
 
 object AvellanedaMmTestnetRunner {
@@ -45,6 +50,9 @@ object AvellanedaMmTestnetRunner {
         val snapshotDepth = System.getenv("SNAPSHOT_DEPTH")?.toIntOrNull() ?: 100
         val logEvery = System.getenv("LOG_EVERY_TICKS")?.toLongOrNull() ?: 1_000L
         val fillPollMs = System.getenv("FILL_POLL_MS")?.toLongOrNull() ?: 2_000L
+        val makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0
+        val takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0
+        val cleanStart = System.getenv("CLEAN_START")?.toBooleanStrictOrNull() ?: true
 
         println("Avellaneda live (testnet execution) starting...")
         println("Source       : $source")
@@ -66,13 +74,32 @@ object AvellanedaMmTestnetRunner {
 
         try {
             val universe = koin.get<BinanceUniverse>()
-            val futuresInfo = if (source == "FUTURES") koin.get<FuturesExchangeInfoService>() else null
-            val futuresFilters = if (source == "FUTURES") futuresInfo?.fetchSymbolFilters() else emptyMap()
+            val futuresInfo =
+                if (source == "FUTURES") koin.get<FuturesExchangeInfoService>() else null
+            val futuresFilters =
+                if (source == "FUTURES") futuresInfo?.fetchSymbolFilters() else emptyMap()
             if (source == "FUTURES" && futuresFilters.isNullOrEmpty()) {
                 println("No futures symbol filters available; aborting.")
                 return@runBlocking
             }
-            val symbols = resolveSymbols(source, symbolsEnv, topN, universe, futuresFilters)
+            val minQuoteVolume = System.getenv("MIN_QUOTE_VOLUME")?.toDoubleOrNull() ?: 0.0
+            val minTrades = System.getenv("MIN_TRADES")?.toLongOrNull() ?: 0L
+            val quoteAssets = System.getenv("QUOTE_ASSETS")
+                ?.split(',')
+                ?.map { it.trim().uppercase() }
+                ?.filter { it.isNotBlank() }
+                ?.toSet()
+                ?: setOf("USDT")
+            val symbols = resolveSymbols(
+                source,
+                symbolsEnv,
+                topN,
+                universe,
+                futuresFilters,
+                minQuoteVolume,
+                minTrades,
+                quoteAssets
+            )
             val filteredSymbols = if (source == "FUTURES") {
                 val allowed = futuresFilters?.keys ?: emptySet()
                 symbols.filter { allowed.contains(it) }
@@ -122,6 +149,11 @@ object AvellanedaMmTestnetRunner {
             } else {
                 koin.get<AccountStateRepository>()
             }
+            val walletConfig = InventoryWalletConfig.default()
+            val inventoryRepo = CsvInventoryStateRepository(
+                CsvWalletStore(walletConfig.walletCsvPath),
+                walletConfig
+            )
             try {
                 accountRepo.getBalances()
                 println("Testnet preflight OK: account access verified.")
@@ -130,34 +162,73 @@ object AvellanedaMmTestnetRunner {
                 println("Check BINANCE_TESTNET_API_KEY/SECRET and permissions.")
                 return@runBlocking
             }
+
+            if (source == "FUTURES" && cleanStart) {
+                val api = koin.get<BinanceFuturesTestNetApiService>()
+                cleanupFuturesPositionsAndOrders(
+                    api = api,
+                    symbols = liveSymbols,
+                    filters = futuresFilters ?: emptyMap()
+                )
+            }
             val strategies = liveSymbols.associateWith { symbol ->
                 val filters = futuresFilters?.get(symbol)
-                val priceTick = filters?.tickSize ?: (System.getenv("PRICE_TICK")?.toDoubleOrNull() ?: 0.01)
-                val qtyStep = filters?.stepSize ?: (System.getenv("QTY_STEP")?.toDoubleOrNull() ?: 0.0001)
+                val priceTick =
+                    filters?.tickSize ?: (System.getenv("PRICE_TICK")?.toDoubleOrNull() ?: 0.01)
+                val qtyStep =
+                    filters?.stepSize ?: (System.getenv("QTY_STEP")?.toDoubleOrNull() ?: 0.0001)
                 val minQty = filters?.minQty
                 val minNotional = filters?.minNotional
                 val baseQty = System.getenv("ORDER_QTY")?.toDoubleOrNull() ?: 0.001
                 val orderQty = if (minQty != null && baseQty < minQty) minQty else baseQty
-                val cfg = AvellanedaMmConfig.default(symbol).copy(
+                val base = AvellanedaMmConfig.default(symbol)
+                val cfg = base.copy(
                     orderQty = orderQty,
-                    minSpreadPct = System.getenv("MIN_SPREAD_PCT")?.toDoubleOrNull() ?: 0.0005,
+                    minSpreadPct = System.getenv("MIN_SPREAD_PCT")?.toDoubleOrNull()
+                        ?: base.minSpreadPct,
                     minNotional = minNotional,
-                    inventorySkew = System.getenv("INVENTORY_SKEW")?.toDoubleOrNull() ?: 0.01,
-                    maxInventory = System.getenv("MAX_INVENTORY")?.toDoubleOrNull() ?: 0.01,
+                    inventorySkew = System.getenv("INVENTORY_SKEW")?.toDoubleOrNull()
+                        ?: base.inventorySkew,
+                    maxInventory = System.getenv("MAX_INVENTORY")?.toDoubleOrNull()
+                        ?: base.maxInventory,
                     priceTick = priceTick,
                     qtyStep = qtyStep,
-                    quoteRefreshMs = System.getenv("QUOTE_REFRESH_MS")?.toLongOrNull() ?: 500L,
-                    maxQuoteAgeMs = System.getenv("MAX_QUOTE_AGE_MS")?.toLongOrNull() ?: 5_000L,
-                    maxSpreadPct = System.getenv("MAX_SPREAD_PCT")?.toDoubleOrNull(),
-                    minTopDepth = System.getenv("MIN_TOP_DEPTH")?.toDoubleOrNull(),
-                    maxDepthImbalance = System.getenv("MAX_DEPTH_IMBALANCE")?.toDoubleOrNull(),
-                    maxTradeImbalance1s = System.getenv("MAX_TRADE_IMBALANCE_1S")?.toDoubleOrNull(),
-                    minTradeCount1sForToxicity = System.getenv("MIN_TRADE_COUNT_1S")?.toIntOrNull() ?: 5,
-                    maxVol1s = System.getenv("MAX_VOL_1S")?.toDoubleOrNull(),
-                    maxVol5s = System.getenv("MAX_VOL_5S")?.toDoubleOrNull(),
-                    maxVol10s = System.getenv("MAX_VOL_10S")?.toDoubleOrNull(),
-                    logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull() ?: false
+                    quoteRefreshMs = System.getenv("QUOTE_REFRESH_MS")?.toLongOrNull()
+                        ?: base.quoteRefreshMs,
+                    maxQuoteAgeMs = System.getenv("MAX_QUOTE_AGE_MS")?.toLongOrNull()
+                        ?: base.maxQuoteAgeMs,
+                    gateCooldownMs = System.getenv("GATE_COOLDOWN_MS")?.toLongOrNull()
+                        ?: base.gateCooldownMs,
+                    spreadWindowMs = System.getenv("SPREAD_WINDOW_MS")?.toLongOrNull()
+                        ?: base.spreadWindowMs,
+                    minAvgSpreadPct = System.getenv("MIN_AVG_SPREAD_PCT")?.toDoubleOrNull()
+                        ?: base.minAvgSpreadPct,
+                    maxAvgSpreadPct = System.getenv("MAX_AVG_SPREAD_PCT")?.toDoubleOrNull()
+                        ?: base.maxAvgSpreadPct,
+                    maxSpreadPct = System.getenv("MAX_SPREAD_PCT")?.toDoubleOrNull()
+                        ?: base.maxSpreadPct,
+                    minTopDepth = System.getenv("MIN_TOP_DEPTH")?.toDoubleOrNull()
+                        ?: base.minTopDepth,
+                    topDepthLevels = System.getenv("TOP_DEPTH_LEVELS")?.toIntOrNull()
+                        ?: base.topDepthLevels,
+                    maxDepthImbalance = System.getenv("MAX_DEPTH_IMBALANCE")?.toDoubleOrNull()
+                        ?: base.maxDepthImbalance,
+                    maxTradeImbalance1s = System.getenv("MAX_TRADE_IMBALANCE_1S")?.toDoubleOrNull()
+                        ?: base.maxTradeImbalance1s,
+                    minTradeCount1sForToxicity = System.getenv("MIN_TRADE_COUNT_1S")?.toIntOrNull()
+                        ?: base.minTradeCount1sForToxicity,
+                    maxVol1s = System.getenv("MAX_VOL_1S")?.toDoubleOrNull() ?: base.maxVol1s,
+                    maxVol5s = System.getenv("MAX_VOL_5S")?.toDoubleOrNull() ?: base.maxVol5s,
+                    maxVol10s = System.getenv("MAX_VOL_10S")?.toDoubleOrNull() ?: base.maxVol10s,
+                    volSpreadMultiplier = System.getenv("VOL_SPREAD_MULT")?.toDoubleOrNull()
+                        ?: base.volSpreadMultiplier,
+                    quoteStyle = parseQuoteStyle(System.getenv("QUOTE_STYLE")),
+                    logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull()
+                        ?: base.logGateDecisions
                 )
+                if (System.getenv("LOG_CONFIG")?.toBooleanStrictOrNull() == true) {
+                    println("config[$symbol]=$cfg")
+                }
                 AvellanedaMmStrategy(gateway, cfg)
             }
 
@@ -165,6 +236,10 @@ object AvellanedaMmTestnetRunner {
             var ticks = 0L
             var lastFillPoll = 0L
             val fillCounts = mutableMapOf<String, Int>()
+            val lastFillTime = mutableMapOf<String, Long>()
+            var lastPnlLog = 0L
+            var lastFillTotal = 0
+            val adverseTracker = AdverseSelectionTracker()
 
             val symbolList = liveSymbols.map { it.asSymbol() }
             val flow: Flow<MarketState> = if (source == "FUTURES") {
@@ -177,12 +252,47 @@ object AvellanedaMmTestnetRunner {
 
             flow.collect { state ->
                 strategies[state.symbol]?.onMarketState(state)
+                adverseTracker.onMarketState(state)
                 ticks++
 
                 val now = state.eventTimeMs ?: state.timestampMs
                 if (now - lastFillPoll >= fillPollMs) {
-                    pollFills(liveSymbols, accountRepo, fillCounts)
+                    if (source == "FUTURES") {
+                        val api = koin.get<BinanceFuturesTestNetApiService>()
+                        pollFillsFutures(
+                            liveSymbols,
+                            api,
+                            inventoryRepo,
+                            fillCounts,
+                            lastFillTime,
+                            makerFeePct,
+                            takerFeePct,
+                            adverseTracker
+                        )
+                    } else {
+                        pollFills(liveSymbols, accountRepo, fillCounts)
+                    }
                     lastFillPoll = now
+                }
+
+                inventoryRepo.applyMarkPrice(
+                    Symbol.of(state.symbol),
+                    Price.fromDouble(state.midPrice ?: state.lastTradePrice ?: return@collect),
+                    now
+                )
+                if (lastPnlLog == 0L) lastPnlLog = now
+                if (now - lastPnlLog >= 60_000L) {
+                    logPnlSummary(inventoryRepo)
+                    logHealthSummary(
+                        inventoryRepo,
+                        fillCounts,
+                        lastFillTotal,
+                        lastPnlLog,
+                        now,
+                        adverseTracker
+                    )
+                    lastFillTotal = fillCounts.values.sum()
+                    lastPnlLog = now
                 }
 
                 if (ticks % logEvery == 0L) {
@@ -214,12 +324,226 @@ object AvellanedaMmTestnetRunner {
         }
     }
 
+    private suspend fun pollFillsFutures(
+        symbols: List<String>,
+        api: BinanceFuturesTestNetApiService,
+        inventoryRepo: CsvInventoryStateRepository,
+        fillCounts: MutableMap<String, Int>,
+        lastFillTime: MutableMap<String, Long>,
+        makerFeePct: Double,
+        takerFeePct: Double,
+        adverseTracker: AdverseSelectionTracker
+    ) {
+        for (symbol in symbols) {
+            try {
+                val startTime = lastFillTime[symbol]?.plus(1)
+                val trades = api.getUserTrades(symbol, startTime = startTime)
+                val prevTotal = fillCounts[symbol] ?: 0
+                if (trades.isNotEmpty()) {
+                    val last = trades.lastOrNull()
+                    val newTotal = prevTotal + trades.size
+                    println("fillsTotal=$newTotal lastFill=${last?.symbol} price=${last?.price}")
+                    fillCounts[symbol] = newTotal
+                }
+                trades.forEach { t ->
+                    val feeRate = if (t.maker) makerFeePct else takerFeePct
+                    val fee = if (feeRate > 0.0) {
+                        com.example.account.domain.Money.fromString(t.quoteQty)
+                            .let {
+                                com.example.account.domain.Money(
+                                    it.value.multiply(
+                                        java.math.BigDecimal.valueOf(
+                                            feeRate
+                                        )
+                                    )
+                                )
+                            }
+                    } else {
+                        com.example.account.domain.Money.ZERO
+                    }
+                    val side = if (t.buyer) com.example.platform.model.enums.OrderSide.BUY
+                    else com.example.platform.model.enums.OrderSide.SELL
+                    val signedQty = if (t.buyer) {
+                        com.example.account.domain.Qty.fromString(t.quantity)
+                    } else {
+                        -com.example.account.domain.Qty.fromString(t.quantity)
+                    }
+                    inventoryRepo.applyFill(
+                        InventoryFill(
+                            symbol = Symbol.of(t.symbol),
+                            signedQty = signedQty,
+                            price = com.example.account.domain.Price.fromString(t.price),
+                            timestampMs = t.time,
+                            fee = fee
+                        )
+                    )
+                    adverseTracker.recordFill(
+                        t.symbol,
+                        side,
+                        t.price.toDoubleOrNull() ?: return@forEach,
+                        t.time
+                    )
+                }
+                val maxTime = trades.maxOfOrNull { it.time }
+                if (maxTime != null) lastFillTime[symbol] = maxTime
+            } catch (_: Exception) {
+                // Ignore invalid symbol or permission errors during polling.
+            }
+        }
+    }
+
+    private suspend fun cleanupFuturesPositionsAndOrders(
+        api: BinanceFuturesTestNetApiService,
+        symbols: List<String>,
+        filters: Map<String, com.example.network.futures.interfaces.FuturesSymbolFilters>
+    ) {
+        println("Cleaning futures testnet: cancel open orders + close positions...")
+        symbols.forEach { symbol ->
+            runCatching { api.cancelAllOpenOrders(symbol) }
+        }
+        val account = api.getAccountInfo()
+        account.positions.forEach { pos ->
+            val qty = pos.positionAmt.toDoubleOrNull() ?: 0.0
+            if (qty == 0.0) return@forEach
+            val side = if (qty > 0.0) com.example.platform.model.enums.OrderSide.SELL
+            else com.example.platform.model.enums.OrderSide.BUY
+            val step = filters[pos.symbol]?.stepSize ?: 0.0
+            val qtyStr = formatToStep(kotlin.math.abs(qty), step)
+            runCatching {
+                api.createOrder(
+                    symbol = pos.symbol,
+                    side = side,
+                    type = com.example.platform.model.enums.OrderType.MARKET,
+                    quantity = qtyStr,
+                    price = null,
+                    timeInForce = null,
+                    reduceOnly = true
+                )
+            }
+        }
+        println("Cleanup done.")
+    }
+
+    private fun formatToStep(value: Double, step: Double): String {
+        if (step <= 0.0) return java.math.BigDecimal.valueOf(value).toPlainString()
+        val stepBd = java.math.BigDecimal.valueOf(step).stripTrailingZeros()
+        val scale = stepBd.scale().coerceAtLeast(0)
+        val units =
+            java.math.BigDecimal.valueOf(value).divide(stepBd, 0, java.math.RoundingMode.DOWN)
+        val rounded = units.multiply(stepBd).setScale(scale, java.math.RoundingMode.DOWN)
+        return rounded.stripTrailingZeros().toPlainString()
+    }
+
+    private suspend fun logPnlSummary(inventoryRepo: CsvInventoryStateRepository) {
+        val positions = inventoryRepo.getInventory()
+        if (positions.isEmpty()) {
+            println("pnl: no positions")
+            return
+        }
+        val header = String.format(
+            "%-10s %12s %12s %12s %12s %12s %8s",
+            "SYMBOL",
+            "QTY",
+            "AVG",
+            "UNR_PNL",
+            "REAL_PNL",
+            "PNL",
+            "PNL%"
+        )
+        val line = "-".repeat(header.length)
+        println(line)
+        println(header)
+        println(line)
+
+        var totalExposure = 0.0
+        var totalRealized = 0.0
+        var totalUnrealized = 0.0
+
+        positions.sortedBy { it.symbol.value }.forEach { p ->
+            val qty = p.quantity.value.toDouble()
+            val avg = p.avgPrice.value.toDouble()
+            val unrealized = p.unrealizedPnl.value.toDouble()
+            val realized = p.realizedPnl.value.toDouble()
+            val pnl = realized + unrealized
+            val exposure = kotlin.math.abs(qty * avg)
+            totalExposure += exposure
+            totalRealized += realized
+            totalUnrealized += unrealized
+            val pnlPct = if (exposure > 0.0) pnl / exposure * 100.0 else 0.0
+            println(
+                String.format(
+                    "%-10s %12.6f %12.6f %12.4f %12.4f %12.4f %7.2f%%",
+                    p.symbol.value,
+                    qty,
+                    avg,
+                    unrealized,
+                    realized,
+                    pnl,
+                    pnlPct
+                )
+            )
+        }
+
+        val totalPnl = totalRealized + totalUnrealized
+        val totalPct = if (totalExposure > 0.0) totalPnl / totalExposure * 100.0 else 0.0
+        println(line)
+        println(
+            String.format(
+                "%-10s %12s %12s %12.4f %12.4f %12.4f %7.2f%%",
+                "TOTAL",
+                "",
+                "",
+                totalUnrealized,
+                totalRealized,
+                totalPnl,
+                totalPct
+            )
+        )
+        println(line)
+    }
+
+    private suspend fun logHealthSummary(
+        inventoryRepo: CsvInventoryStateRepository,
+        fillCounts: Map<String, Int>,
+        lastFillTotal: Int,
+        lastLogMs: Long,
+        nowMs: Long,
+        adverseTracker: AdverseSelectionTracker
+    ) {
+        val elapsedSec = ((nowMs - lastLogMs).coerceAtLeast(1L)) / 1000.0
+        val totalFills = fillCounts.values.sum()
+        val fillsPerMin = (totalFills - lastFillTotal) * (60.0 / elapsedSec)
+        val positions = inventoryRepo.getInventory()
+        val maxAbsQty =
+            positions.maxOfOrNull { kotlin.math.abs(it.quantity.value.toDouble()) } ?: 0.0
+        val sumAbsQty = positions.sumOf { kotlin.math.abs(it.quantity.value.toDouble()) }
+        val labels = adverseTracker.horizonsLabel()
+        val adv = adverseTracker.snapshotBps()
+        val advStr = labels.zip(adv).joinToString(" ") { (label, value) ->
+            val v = value ?: 0.0
+            "adv${label}=${"%.2f".format(v)}"
+        }
+        println(
+            String.format(
+                "health: fillsPerMin=%.2f positions=%d maxAbsQty=%.6f sumAbsQty=%.6f %s",
+                fillsPerMin,
+                positions.size,
+                maxAbsQty,
+                sumAbsQty,
+                advStr
+            )
+        )
+    }
+
     private suspend fun resolveSymbols(
         source: String,
         symbolsEnv: String?,
         topN: Int,
         universe: BinanceUniverse,
-        futuresFilters: Map<String, com.example.network.futures.interfaces.FuturesSymbolFilters>?
+        futuresFilters: Map<String, com.example.network.futures.interfaces.FuturesSymbolFilters>?,
+        minQuoteVolume: Double,
+        minTrades: Long,
+        quoteAssets: Set<String>
     ): List<String> {
         val futuresSymbols = futuresFilters?.keys ?: emptySet()
         if (!symbolsEnv.isNullOrBlank()) {
@@ -229,7 +553,12 @@ object AvellanedaMmTestnetRunner {
                 .filter { symbol -> futuresSymbols.isEmpty() || futuresSymbols.contains(symbol) }
         }
         println("Fetching universe...")
-        val config = UniverseConfig(maxSymbols = topN)
+        val config = UniverseConfig(
+            quoteAssets = quoteAssets,
+            minQuoteVolume = minQuoteVolume,
+            minTrades = minTrades,
+            maxSymbols = topN
+        )
         val ranked = universe.fetchTopSymbols(config).map { it.symbol }
         return if (futuresSymbols.isEmpty()) {
             ranked
@@ -240,6 +569,14 @@ object AvellanedaMmTestnetRunner {
             } else {
                 filtered
             }
+        }
+    }
+
+    private fun parseQuoteStyle(raw: String?): QuoteStyle {
+        return when (raw?.trim()?.uppercase()) {
+            "IMPROVE" -> QuoteStyle.IMPROVE
+            "WIDEN" -> QuoteStyle.WIDEN
+            else -> QuoteStyle.JOIN
         }
     }
 }

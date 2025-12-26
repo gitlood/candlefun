@@ -18,7 +18,9 @@ internal class BinanceFuturesTestNetApiServiceImpl(
         type: OrderType,
         quantity: String,
         price: String?,
-        timeInForce: String?
+        timeInForce: String?,
+        reduceOnly: Boolean?,
+        clientOrderId: String?
     ): FuturesOrderDto {
         val params = mutableMapOf(
             "symbol" to symbol,
@@ -28,6 +30,8 @@ internal class BinanceFuturesTestNetApiServiceImpl(
         )
         if (price != null) params["price"] = price
         if (timeInForce != null) params["timeInForce"] = timeInForce
+        if (reduceOnly != null) params["reduceOnly"] = reduceOnly.toString()
+        if (clientOrderId != null) params["newClientOrderId"] = clientOrderId
         return privateApi.post("fapi/v1/order", params)
     }
 
@@ -71,5 +75,10 @@ internal class BinanceFuturesTestNetApiServiceImpl(
             "leverage" to leverage.toString()
         )
         return privateApi.post("fapi/v1/leverage", params)
+    }
+
+    override suspend fun cancelAllOpenOrders(symbol: String): List<FuturesOrderDto> {
+        val params = mutableMapOf("symbol" to symbol)
+        return privateApi.delete("fapi/v1/allOpenOrders", params)
     }
 }

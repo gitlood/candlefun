@@ -29,3 +29,5 @@ app/orderbookscalper/*.csv
 /execution_domain_dump.txt
 /avellaneda_wallet.csv
 /marketstate.csv
+/avellaneda_live_dump.txt
+/avellaneda_mm_dump.txt

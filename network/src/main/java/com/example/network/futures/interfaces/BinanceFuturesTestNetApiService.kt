@@ -14,7 +14,9 @@ interface BinanceFuturesTestNetApiService {
         type: OrderType,
         quantity: String,
         price: String? = null,
-        timeInForce: String? = null
+        timeInForce: String? = null,
+        reduceOnly: Boolean? = null,
+        clientOrderId: String? = null
     ): FuturesOrderDto
 
     suspend fun cancelOrder(
@@ -35,4 +37,6 @@ interface BinanceFuturesTestNetApiService {
     ): List<FuturesTradeDto>
 
     suspend fun setLeverage(symbol: String, leverage: Int): FuturesLeverageDto
+
+    suspend fun cancelAllOpenOrders(symbol: String): List<FuturesOrderDto>
 }

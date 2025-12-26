@@ -28,5 +28,6 @@ data class InventoryFill(
     val symbol: Symbol,
     val signedQty: Qty,
     val price: Price,
-    val timestampMs: Long
+    val timestampMs: Long,
+    val fee: Money = Money.ZERO
 )

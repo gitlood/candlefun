@@ -23,7 +23,11 @@ import java.util.concurrent.atomic.AtomicLong
 class SimExecutionGateway(
     private val accountStateRepository: AccountStateRepository,
     private val inventoryStateRepository: InventoryStateRepository? = null,
-    private val fillSimulator: ConservativeFillSimulator = ConservativeFillSimulator()
+    private val fillSimulator: ConservativeFillSimulator = ConservativeFillSimulator(),
+    private val orderLatencyMs: Long = 0L,
+    private val makerFeePct: Double = 0.0,
+    private val takerFeePct: Double = 0.0,
+    private val fillListener: ((FillRecord) -> Unit)? = null
 ) : ExecutionGateway {
     private val orderIdSeq = AtomicLong(1L)
     private val orders = mutableMapOf<Long, ExecutionOrder>()
@@ -76,7 +80,9 @@ class SimExecutionGateway(
     }
 
     suspend fun onMarketState(state: MarketState) {
+        val now = state.eventTimeMs ?: state.timestampMs
         val openOrders = getOpenOrders(Symbol.of(state.symbol))
+            .filter { order -> order.transactTimeMs + orderLatencyMs <= now }
         if (openOrders.isEmpty()) return
 
         val fills = fillSimulator.matchFills(state, openOrders)
@@ -96,6 +102,7 @@ class SimExecutionGateway(
                 status = newStatus,
                 transactTimeMs = fill.fillTimeMs
             )
+            fillListener?.invoke(fill)
             applyFillToPosition(fill)
             recordFill(fill)
         }
@@ -120,7 +127,8 @@ class SimExecutionGateway(
                 symbol = fill.symbol,
                 signedQty = signedQty,
                 price = fill.price,
-                timestampMs = fill.fillTimeMs
+                timestampMs = fill.fillTimeMs,
+                fee = estimateFee(fill)
             )
         )
     }
@@ -147,6 +155,13 @@ class SimExecutionGateway(
             else -> null
         }
     }
+
+    private fun estimateFee(fill: FillRecord): com.example.account.domain.Money {
+        val feeRate = makerFeePct
+        if (feeRate <= 0.0) return com.example.account.domain.Money.ZERO
+        val notional = fill.price.value.multiply(fill.quantity.value)
+        return com.example.account.domain.Money(notional.multiply(java.math.BigDecimal.valueOf(feeRate)))
+    }
 }
 
 class SimAccountStateRepository(
@@ -168,6 +183,8 @@ class SimAccountStateRepository(
     fun recordFill(fill: Fill) {
         fills.add(fill)
     }
+
+    fun totalFills(): Int = fills.size
 
     fun setBalances(next: List<BalanceSnapshot>) {
         balances.clear()

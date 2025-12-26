@@ -52,11 +52,16 @@ class CsvInventoryStateRepository(
             )
 
             val updated = applyFillToPosition(pos, fill)
+            val updatedWithFee = if (fill.fee == Money.ZERO) {
+                updated
+            } else {
+                updated.copy(realizedPnl = Money(updated.realizedPnl.value.subtract(fill.fee.value)))
+            }
 
             if (idx >= 0) {
-                current[idx] = updated
+                current[idx] = updatedWithFee
             } else {
-                current.add(updated)
+                current.add(updatedWithFee)
             }
 
             state.value = current
