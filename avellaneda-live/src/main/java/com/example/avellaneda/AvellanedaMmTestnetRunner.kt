@@ -28,6 +28,7 @@ import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.core.qualifier.named
+import java.io.File
 import kotlin.time.Duration.Companion.milliseconds
 
 object AvellanedaMmTestnetRunner {
@@ -50,9 +51,10 @@ object AvellanedaMmTestnetRunner {
         val snapshotDepth = System.getenv("SNAPSHOT_DEPTH")?.toIntOrNull() ?: 100
         val logEvery = System.getenv("LOG_EVERY_TICKS")?.toLongOrNull() ?: 1_000L
         val fillPollMs = System.getenv("FILL_POLL_MS")?.toLongOrNull() ?: 2_000L
-        val makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0
-        val takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0
+        val makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0002
+        val takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0004
         val cleanStart = System.getenv("CLEAN_START")?.toBooleanStrictOrNull() ?: true
+        val resetWallet = System.getenv("RESET_WALLET")?.toBooleanStrictOrNull() ?: true
 
         println("Avellaneda live (testnet execution) starting...")
         println("Source       : $source")
@@ -150,6 +152,9 @@ object AvellanedaMmTestnetRunner {
                 koin.get<AccountStateRepository>()
             }
             val walletConfig = InventoryWalletConfig.default()
+            if (resetWallet) {
+                File(walletConfig.walletCsvPath).delete()
+            }
             val inventoryRepo = CsvInventoryStateRepository(
                 CsvWalletStore(walletConfig.walletCsvPath),
                 walletConfig
@@ -170,6 +175,11 @@ object AvellanedaMmTestnetRunner {
                     symbols = liveSymbols,
                     filters = futuresFilters ?: emptyMap()
                 )
+            }
+            val adverseTracker = AdverseSelectionTracker()
+            val adverseProvider: (String) -> Double? = { symbol ->
+                val adv = adverseTracker.snapshotBps(symbol)
+                adv.getOrNull(1) ?: adv.lastOrNull()
             }
             val strategies = liveSymbols.associateWith { symbol ->
                 val filters = futuresFilters?.get(symbol)
@@ -222,6 +232,10 @@ object AvellanedaMmTestnetRunner {
                     maxVol10s = System.getenv("MAX_VOL_10S")?.toDoubleOrNull() ?: base.maxVol10s,
                     volSpreadMultiplier = System.getenv("VOL_SPREAD_MULT")?.toDoubleOrNull()
                         ?: base.volSpreadMultiplier,
+                    adaptiveSpreadTargetBps = System.getenv("ADAPTIVE_SPREAD_TARGET_BPS")?.toDoubleOrNull()
+                        ?: base.adaptiveSpreadTargetBps,
+                    adaptiveSpreadUpdateMs = System.getenv("ADAPTIVE_SPREAD_UPDATE_MS")?.toLongOrNull()
+                        ?: base.adaptiveSpreadUpdateMs,
                     quoteStyle = parseQuoteStyle(System.getenv("QUOTE_STYLE")),
                     logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull()
                         ?: base.logGateDecisions
@@ -229,7 +243,7 @@ object AvellanedaMmTestnetRunner {
                 if (System.getenv("LOG_CONFIG")?.toBooleanStrictOrNull() == true) {
                     println("config[$symbol]=$cfg")
                 }
-                AvellanedaMmStrategy(gateway, cfg)
+                AvellanedaMmStrategy(gateway, cfg, adverseProvider)
             }
 
             println("Testnet execution running. Press Ctrl+C to stop.")
@@ -239,7 +253,6 @@ object AvellanedaMmTestnetRunner {
             val lastFillTime = mutableMapOf<String, Long>()
             var lastPnlLog = 0L
             var lastFillTotal = 0
-            val adverseTracker = AdverseSelectionTracker()
 
             val symbolList = liveSymbols.map { it.asSymbol() }
             val flow: Flow<MarketState> = if (source == "FUTURES") {
@@ -282,9 +295,11 @@ object AvellanedaMmTestnetRunner {
                 )
                 if (lastPnlLog == 0L) lastPnlLog = now
                 if (now - lastPnlLog >= 60_000L) {
-                    logPnlSummary(inventoryRepo)
+                    val allowed = liveSymbols.toSet()
+                    logPnlSummary(inventoryRepo, allowed)
                     logHealthSummary(
                         inventoryRepo,
+                        allowed,
                         fillCounts,
                         lastFillTotal,
                         lastPnlLog,
@@ -434,8 +449,11 @@ object AvellanedaMmTestnetRunner {
         return rounded.stripTrailingZeros().toPlainString()
     }
 
-    private suspend fun logPnlSummary(inventoryRepo: CsvInventoryStateRepository) {
-        val positions = inventoryRepo.getInventory()
+    private suspend fun logPnlSummary(
+        inventoryRepo: CsvInventoryStateRepository,
+        allowedSymbols: Set<String>
+    ) {
+        val positions = inventoryRepo.getInventory().filter { allowedSymbols.contains(it.symbol.value) }
         if (positions.isEmpty()) {
             println("pnl: no positions")
             return
@@ -504,6 +522,7 @@ object AvellanedaMmTestnetRunner {
 
     private suspend fun logHealthSummary(
         inventoryRepo: CsvInventoryStateRepository,
+        allowedSymbols: Set<String>,
         fillCounts: Map<String, Int>,
         lastFillTotal: Int,
         lastLogMs: Long,
@@ -513,26 +532,29 @@ object AvellanedaMmTestnetRunner {
         val elapsedSec = ((nowMs - lastLogMs).coerceAtLeast(1L)) / 1000.0
         val totalFills = fillCounts.values.sum()
         val fillsPerMin = (totalFills - lastFillTotal) * (60.0 / elapsedSec)
-        val positions = inventoryRepo.getInventory()
+        val positions = inventoryRepo.getInventory().filter { allowedSymbols.contains(it.symbol.value) }
         val maxAbsQty =
             positions.maxOfOrNull { kotlin.math.abs(it.quantity.value.toDouble()) } ?: 0.0
         val sumAbsQty = positions.sumOf { kotlin.math.abs(it.quantity.value.toDouble()) }
         val labels = adverseTracker.horizonsLabel()
-        val adv = adverseTracker.snapshotBps()
-        val advStr = labels.zip(adv).joinToString(" ") { (label, value) ->
-            val v = value ?: 0.0
-            "adv${label}=${"%.2f".format(v)}"
+        val advStr = positions.sortedBy { it.symbol.value }.joinToString(" ") { p ->
+            val adv = adverseTracker.snapshotBps(p.symbol.value)
+            val parts = labels.zip(adv).joinToString(",") { (label, value) ->
+                val v = value?.let { "%.2f".format(it) } ?: "NA"
+                "adv${label}=${v}"
+            }
+            "${p.symbol.value}[$parts]"
         }
         println(
             String.format(
-                "health: fillsPerMin=%.2f positions=%d maxAbsQty=%.6f sumAbsQty=%.6f %s",
+                "health: fillsPerMin=%.2f positions=%d maxAbsQty=%.6f sumAbsQty=%.6f",
                 fillsPerMin,
                 positions.size,
                 maxAbsQty,
-                sumAbsQty,
-                advStr
+                sumAbsQty
             )
         )
+        println("adv: $advStr")
     }
 
     private suspend fun resolveSymbols(

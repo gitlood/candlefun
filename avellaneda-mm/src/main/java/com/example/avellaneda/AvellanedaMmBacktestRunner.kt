@@ -40,13 +40,17 @@ object AvellanedaMmBacktestRunner {
         val orderLatencyMs = System.getenv("SIM_ORDER_LATENCY_MS")?.toLongOrNull() ?: 0L
         val queueBuffer = System.getenv("SIM_QUEUE_BUFFER")?.toDoubleOrNull() ?: 1.0
         val queueLevels = System.getenv("SIM_MAX_QUEUE_LEVELS")?.toIntOrNull() ?: 5
-        val makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0
-        val takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0
+        val makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0002
+        val takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0004
         val fillSimulator = ConservativeFillSimulator(
             queueBufferMultiplier = queueBuffer,
             maxDepthLevels = queueLevels
         )
         val adverseTracker = AdverseSelectionTracker()
+        val adverseProvider: (String) -> Double? = { symbol ->
+            val adv = adverseTracker.snapshotBps(symbol)
+            adv.getOrNull(1) ?: adv.lastOrNull()
+        }
         val gateway = SimExecutionGateway(
             accountRepo,
             inventoryRepo,
@@ -88,13 +92,17 @@ object AvellanedaMmBacktestRunner {
                 maxVol5s = System.getenv("MAX_VOL_5S")?.toDoubleOrNull() ?: base.maxVol5s,
                 maxVol10s = System.getenv("MAX_VOL_10S")?.toDoubleOrNull() ?: base.maxVol10s,
                 volSpreadMultiplier = System.getenv("VOL_SPREAD_MULT")?.toDoubleOrNull() ?: base.volSpreadMultiplier,
+                adaptiveSpreadTargetBps = System.getenv("ADAPTIVE_SPREAD_TARGET_BPS")?.toDoubleOrNull()
+                    ?: base.adaptiveSpreadTargetBps,
+                adaptiveSpreadUpdateMs = System.getenv("ADAPTIVE_SPREAD_UPDATE_MS")?.toLongOrNull()
+                    ?: base.adaptiveSpreadUpdateMs,
                 quoteStyle = parseQuoteStyle(System.getenv("QUOTE_STYLE")),
                 logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull() ?: base.logGateDecisions
             )
             if (System.getenv("LOG_CONFIG")?.toBooleanStrictOrNull() == true) {
                 println("config[$symbol]=$config")
             }
-            AvellanedaMmStrategy(gateway, config)
+            AvellanedaMmStrategy(gateway, config, adverseProvider)
         }
 
         var ticks = 0L
@@ -254,21 +262,24 @@ object AvellanedaMmBacktestRunner {
         val maxAbsQty = positions.maxOfOrNull { kotlin.math.abs(it.quantity.value.toDouble()) } ?: 0.0
         val sumAbsQty = positions.sumOf { kotlin.math.abs(it.quantity.value.toDouble()) }
         val labels = adverseTracker.horizonsLabel()
-        val adv = adverseTracker.snapshotBps()
-        val advStr = labels.zip(adv).joinToString(" ") { (label, value) ->
-            val v = value ?: 0.0
-            "adv${label}=${"%.2f".format(v)}"
+        val advStr = positions.sortedBy { it.symbol.value }.joinToString(" ") { p ->
+            val adv = adverseTracker.snapshotBps(p.symbol.value)
+            val parts = labels.zip(adv).joinToString(",") { (label, value) ->
+                val v = value?.let { "%.2f".format(it) } ?: "NA"
+                "adv${label}=${v}"
+            }
+            "${p.symbol.value}[$parts]"
         }
         println(
             String.format(
-                "health: fillsPerMin=%.2f positions=%d maxAbsQty=%.6f sumAbsQty=%.6f %s",
+                "health: fillsPerMin=%.2f positions=%d maxAbsQty=%.6f sumAbsQty=%.6f",
                 fillsPerMin,
                 positions.size,
                 maxAbsQty,
-                sumAbsQty,
-                advStr
+                sumAbsQty
             )
         )
+        println("adv: $advStr")
     }
 
     private fun parseQuoteStyle(raw: String?): QuoteStyle {

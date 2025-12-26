@@ -7,8 +7,8 @@ class AdverseSelectionTracker(
     private val horizonsMs: LongArray = longArrayOf(1_000L, 5_000L)
 ) {
     private val pending = ArrayDeque<PendingFill>()
-    private val sums = DoubleArray(horizonsMs.size)
-    private val counts = IntArray(horizonsMs.size)
+    private val sumsBySymbol = mutableMapOf<String, DoubleArray>()
+    private val countsBySymbol = mutableMapOf<String, IntArray>()
 
     fun recordFill(symbol: String, side: OrderSide, price: Double, timestampMs: Long) {
         pending.addLast(PendingFill(symbol, side, price, timestampMs, BooleanArray(horizonsMs.size)))
@@ -23,6 +23,8 @@ class AdverseSelectionTracker(
         while (iter.hasNext()) {
             val fill = iter.next()
             if (fill.symbol != state.symbol) continue
+            val sums = sumsFor(fill.symbol)
+            val counts = countsFor(fill.symbol)
             var doneCount = 0
             for (i in horizonsMs.indices) {
                 if (fill.done[i]) {
@@ -43,10 +45,16 @@ class AdverseSelectionTracker(
         }
     }
 
-    fun snapshotBps(): List<Double?> {
+    fun snapshotBps(symbol: String): List<Double?> {
+        val sums = sumsBySymbol[symbol] ?: return horizonsMs.map { null }
+        val counts = countsBySymbol[symbol] ?: return horizonsMs.map { null }
         return horizonsMs.indices.map { i ->
             if (counts[i] == 0) null else (sums[i] / counts[i]) * 10_000.0
         }
+    }
+
+    fun snapshotBpsMap(): Map<String, List<Double?>> {
+        return sumsBySymbol.keys.associateWith { snapshotBps(it) }
     }
 
     fun horizonsLabel(): List<String> = horizonsMs.map { "${it / 1000}s" }
@@ -65,4 +73,12 @@ class AdverseSelectionTracker(
         val timestampMs: Long,
         val done: BooleanArray
     )
+
+    private fun sumsFor(symbol: String): DoubleArray {
+        return sumsBySymbol.getOrPut(symbol) { DoubleArray(horizonsMs.size) }
+    }
+
+    private fun countsFor(symbol: String): IntArray {
+        return countsBySymbol.getOrPut(symbol) { IntArray(horizonsMs.size) }
+    }
 }

@@ -16,7 +16,8 @@ import kotlin.math.abs
 
 class AvellanedaMmStrategy(
     private val gateway: ExecutionGateway,
-    private val config: AvellanedaMmConfig
+    private val config: AvellanedaMmConfig,
+    private val adverseBpsProvider: ((String) -> Double?)? = null
 ) {
     private var lastActionMs: Long = 0L
     private var lastBidOrderId: Long? = null
@@ -24,6 +25,8 @@ class AvellanedaMmStrategy(
     private var lastGateReason: String? = null
     private var lastGateMs: Long = 0L
     private val spreadSamples = ArrayDeque<SpreadSample>(256)
+    private var adaptiveMinSpreadPct: Double = config.minSpreadPct
+    private var lastAdaptiveUpdateMs: Long = 0L
 
     suspend fun onMarketState(state: MarketState) {
         if (state.symbol != config.symbol) return
@@ -69,7 +72,8 @@ class AvellanedaMmStrategy(
         }
         val skew = inventoryFraction * config.inventorySkew * mid
 
-        val minHalfSpread = (config.minSpreadPct * mid) / 2.0
+        updateAdaptiveSpread(now)
+        val minHalfSpread = (adaptiveMinSpreadPct * mid) / 2.0
         val baseHalfSpread = maxOf(spread / 2.0, minHalfSpread)
         val volAdj = (state.vol1s ?: 0.0) * config.volSpreadMultiplier * mid
         val halfSpread = baseHalfSpread + volAdj
@@ -174,6 +178,21 @@ class AvellanedaMmStrategy(
             if (abs(state.tradeImbalance1s) > maxTradeImb) return "toxic_flow"
         }
         return null
+    }
+
+    private fun updateAdaptiveSpread(nowMs: Long) {
+        val targetBps = config.adaptiveSpreadTargetBps ?: return
+        if (nowMs - lastAdaptiveUpdateMs < config.adaptiveSpreadUpdateMs) return
+        lastAdaptiveUpdateMs = nowMs
+
+        val advBps = adverseBpsProvider?.invoke(config.symbol)
+        if (advBps == null) return
+        val feeBps = 0.0
+        val requiredBps = (2.0 * feeBps) + (2.0 * advBps) + targetBps
+        adaptiveMinSpreadPct = (requiredBps / 10_000.0).coerceAtLeast(config.minSpreadPct)
+        if (config.logGateDecisions) {
+            println("adaptiveSpread=${config.symbol} minSpreadPct=${"%.6f".format(adaptiveMinSpreadPct)} advBps=${"%.2f".format(advBps)}")
+        }
     }
 
     private fun addSpreadSample(timestampMs: Long, spreadPct: Double) {

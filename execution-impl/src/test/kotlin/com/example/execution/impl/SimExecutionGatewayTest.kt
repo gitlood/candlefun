@@ -30,10 +30,11 @@ class SimExecutionGatewayTest {
                 )
             )
 
+            val now = System.currentTimeMillis() + 1_000L
             val state = MarketState(
                 symbol = "BTCUSDT",
-                timestampMs = 1000L,
-                eventTimeMs = 1000L,
+                timestampMs = now,
+                eventTimeMs = now,
                 bestBidPrice = 99.0,
                 bestBidQty = 1.0,
                 bestAskPrice = 101.0,

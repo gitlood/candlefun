@@ -25,6 +25,8 @@ data class AvellanedaMmConfig(
     val maxVol5s: Double?,
     val maxVol10s: Double?,
     val volSpreadMultiplier: Double,
+    val adaptiveSpreadTargetBps: Double?,
+    val adaptiveSpreadUpdateMs: Long,
     val quoteStyle: QuoteStyle,
     val logGateDecisions: Boolean
 ) {
@@ -35,7 +37,7 @@ data class AvellanedaMmConfig(
                 orderQty = 0.001,
                 minSpreadPct = 0.0001,
                 minNotional = null,
-                inventorySkew = 0.01,
+                inventorySkew = 0.001,
                 maxInventory = 0.01,
                 priceTick = 0.01,
                 qtyStep = 0.0001,
@@ -55,6 +57,8 @@ data class AvellanedaMmConfig(
                 maxVol5s = null,
                 maxVol10s = null,
                 volSpreadMultiplier = 0.0,
+                adaptiveSpreadTargetBps = null,
+                adaptiveSpreadUpdateMs = 10_000L,
                 quoteStyle = QuoteStyle.IMPROVE,
                 logGateDecisions = false
             )
