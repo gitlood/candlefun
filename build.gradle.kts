@@ -13,6 +13,15 @@ subprojects {
 
     tasks.withType<JacocoReport>().configureEach {
         dependsOn(tasks.withType<Test>())
+        val excludes = listOf(
+            "**/ai/**",
+            "**/di/**",
+            "**/dto/**",
+            "**/config/**"
+        )
+        classDirectories.setFrom(
+            files(classDirectories.files.map { fileTree(it) { exclude(excludes) } })
+        )
         reports {
             xml.required.set(true)
             html.required.set(true)
@@ -31,7 +40,15 @@ tasks.register<JacocoReport>("jacocoRootReport") {
         subproject.extensions.findByName("sourceSets") as? SourceSetContainer
     }
 
-    classDirectories.from(sourceSets.map { it.named("main").get().output })
+    val excludes = listOf(
+        "**/ai/**",
+        "**/di/**",
+        "**/dto/**",
+        "**/config/**"
+    )
+    classDirectories.from(
+        sourceSets.map { it.named("main").get().output }.map { fileTree(it) { exclude(excludes) } }
+    )
     sourceDirectories.from(sourceSets.map { it.named("main").get().allSource.srcDirs })
     executionData.from(
         subprojects.map { subproject ->

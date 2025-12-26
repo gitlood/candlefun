@@ -78,7 +78,10 @@ object AvellanedaMmLiveRunner {
             )
 
             val accountRepo = SimAccountStateRepository()
-            val walletConfig = InventoryWalletConfig.default()
+            val walletConfig = InventoryWalletConfig.default().let { cfg ->
+                val autoPersist = System.getenv("WALLET_AUTOPERSIST")?.toBooleanStrictOrNull()
+                if (autoPersist == null) cfg else cfg.copy(autoPersist = autoPersist)
+            }
             val inventoryRepo = CsvInventoryStateRepository(
                 CsvWalletStore(walletConfig.walletCsvPath),
                 walletConfig

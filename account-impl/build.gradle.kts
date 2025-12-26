@@ -11,4 +11,5 @@ dependencies {
     implementation(libs.ktor.serialization.kotlinx.json)
     testImplementation(kotlin("test"))
     testImplementation(libs.junit)
+    testImplementation(libs.mockk)
 }

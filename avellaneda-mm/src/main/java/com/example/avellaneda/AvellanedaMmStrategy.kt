@@ -3,6 +3,8 @@ package com.example.avellaneda
 import com.example.account.domain.Price
 import com.example.account.domain.Qty
 import com.example.account.domain.Symbol
+import com.example.avellaneda.gates.RegimeGate
+import com.example.avellaneda.quotes.QuoteCalculator
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.domain.OrderCancelRequest
 import com.example.execution.domain.OrderRequest
@@ -24,9 +26,10 @@ class AvellanedaMmStrategy(
     private var lastAskOrderId: Long? = null
     private var lastGateReason: String? = null
     private var lastGateMs: Long = 0L
-    private val spreadSamples = ArrayDeque<SpreadSample>(256)
     private var adaptiveMinSpreadPct: Double = config.minSpreadPct
     private var lastAdaptiveUpdateMs: Long = 0L
+    private val gate = RegimeGate(config)
+    private val quoter = QuoteCalculator(config)
 
     suspend fun onMarketState(state: MarketState) {
         if (state.symbol != config.symbol) return
@@ -37,8 +40,8 @@ class AvellanedaMmStrategy(
         val spread = state.spread ?: return
         if (spread <= 0.0) return
         val spreadPct = spread / mid
-        addSpreadSample(now, spreadPct)
-        val gateReason = gateReason(state, spreadPct, now)
+        gate.addSpreadSample(now, spreadPct)
+        val gateReason = gate.check(state, spreadPct, now)
         if (gateReason != null) {
             if (config.logGateDecisions && gateReason != lastGateReason) {
                 println("gate=${config.symbol} reason=$gateReason")
@@ -65,48 +68,12 @@ class AvellanedaMmStrategy(
             ?.quantity
             ?.toDouble()
             ?: 0.0
-        val inventoryFraction = if (config.maxInventory > 0.0) {
-            (positionQty / config.maxInventory).coerceIn(-1.0, 1.0)
-        } else {
-            0.0
-        }
-        val skew = inventoryFraction * config.inventorySkew * mid
-
         updateAdaptiveSpread(now)
-        val minHalfSpread = (adaptiveMinSpreadPct * mid) / 2.0
-        val baseHalfSpread = maxOf(spread / 2.0, minHalfSpread)
-        val volAdj = (state.vol1s ?: 0.0) * config.volSpreadMultiplier * mid
-        val halfSpread = baseHalfSpread + volAdj
-
-        var bid = mid - halfSpread - skew
-        var ask = mid + halfSpread - skew
-
+        val quote = quoter.compute(state, positionQty, adaptiveMinSpreadPct) ?: return
+        val bid = quote.bid
+        val ask = quote.ask
         val bestBid = state.bestBidPrice
         val bestAsk = state.bestAskPrice
-        when (config.quoteStyle) {
-            QuoteStyle.JOIN -> {
-                if (bestBid != null) bid = minOf(bid, bestBid)
-                if (bestAsk != null) ask = maxOf(ask, bestAsk)
-            }
-            QuoteStyle.IMPROVE -> {
-                if (bestBid != null) bid = maxOf(bid, bestBid + config.priceTick)
-                if (bestAsk != null) ask = minOf(ask, bestAsk - config.priceTick)
-            }
-            QuoteStyle.WIDEN -> {
-                if (bestBid != null) bid = minOf(bid, bestBid - config.priceTick)
-                if (bestAsk != null) ask = maxOf(ask, bestAsk + config.priceTick)
-            }
-        }
-
-        bid = roundDown(bid, config.priceTick)
-        ask = roundUp(ask, config.priceTick)
-        val minWidth = 2.0 * minHalfSpread
-        if (ask - bid < minWidth) {
-            val midAdj = (bid + ask) / 2.0
-            bid = roundDown(midAdj - minHalfSpread, config.priceTick)
-            ask = roundUp(midAdj + minHalfSpread, config.priceTick)
-        }
-        if (bid >= ask) return
 
         val allowBid = positionQty < config.maxInventory && (bestAsk == null || bid < bestAsk)
         val allowAsk = positionQty > -config.maxInventory && (bestBid == null || ask > bestBid)
@@ -140,46 +107,6 @@ class AvellanedaMmStrategy(
         lastActionMs = now
     }
 
-    private fun gateReason(state: MarketState, spreadPct: Double, nowMs: Long): String? {
-        val maxSpread = config.maxSpreadPct
-        if (maxSpread != null && spreadPct > maxSpread) return "spread_too_wide"
-
-        val avgSpread = averageSpread(nowMs)
-        if (avgSpread != null) {
-            val minAvg = config.minAvgSpreadPct
-            if (minAvg != null && avgSpread < minAvg) return "spread_avg_below_min"
-            val maxAvg = config.maxAvgSpreadPct
-            if (maxAvg != null && avgSpread > maxAvg) return "spread_avg_above_max"
-        }
-
-        val imbalanceLimit = config.maxDepthImbalance
-        val imbalance = state.depthImbalance
-        if (imbalanceLimit != null && imbalance != null && abs(imbalance) > imbalanceLimit) {
-            return "depth_imbalance"
-        }
-
-        val minTopDepth = config.minTopDepth
-        if (minTopDepth != null) {
-            val levels = config.topDepthLevels
-            val bidDepth = state.bidLevels.take(levels).sumOf { it.quantity }
-            val askDepth = state.askLevels.take(levels).sumOf { it.quantity }
-            if (bidDepth + askDepth < minTopDepth) return "depth_collapse"
-        }
-
-        val maxVol1s = config.maxVol1s
-        if (maxVol1s != null && (state.vol1s ?: 0.0) > maxVol1s) return "vol_1s"
-        val maxVol5s = config.maxVol5s
-        if (maxVol5s != null && (state.vol5s ?: 0.0) > maxVol5s) return "vol_5s"
-        val maxVol10s = config.maxVol10s
-        if (maxVol10s != null && (state.vol10s ?: 0.0) > maxVol10s) return "vol_10s"
-
-        val maxTradeImb = config.maxTradeImbalance1s
-        if (maxTradeImb != null && state.tradeCount1s >= config.minTradeCount1sForToxicity) {
-            if (abs(state.tradeImbalance1s) > maxTradeImb) return "toxic_flow"
-        }
-        return null
-    }
-
     private fun updateAdaptiveSpread(nowMs: Long) {
         val targetBps = config.adaptiveSpreadTargetBps ?: return
         if (nowMs - lastAdaptiveUpdateMs < config.adaptiveSpreadUpdateMs) return
@@ -194,28 +121,6 @@ class AvellanedaMmStrategy(
             println("adaptiveSpread=${config.symbol} minSpreadPct=${"%.6f".format(adaptiveMinSpreadPct)} advBps=${"%.2f".format(advBps)}")
         }
     }
-
-    private fun addSpreadSample(timestampMs: Long, spreadPct: Double) {
-        spreadSamples.addLast(SpreadSample(timestampMs, spreadPct))
-        trimSpreadSamples(timestampMs)
-    }
-
-    private fun averageSpread(timestampMs: Long): Double? {
-        trimSpreadSamples(timestampMs)
-        if (spreadSamples.isEmpty()) return null
-        var sum = 0.0
-        for (s in spreadSamples) sum += s.value
-        return sum / spreadSamples.size
-    }
-
-    private fun trimSpreadSamples(nowMs: Long) {
-        val cutoff = nowMs - config.spreadWindowMs
-        while (spreadSamples.isNotEmpty() && spreadSamples.first().timestampMs < cutoff) {
-            spreadSamples.removeFirst()
-        }
-    }
-
-    private data class SpreadSample(val timestampMs: Long, val value: Double)
 
     private suspend fun ensureOrder(
         side: OrderSide,

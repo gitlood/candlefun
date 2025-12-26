@@ -12,6 +12,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     testImplementation(kotlin("test"))
     testImplementation(libs.junit)
+    testImplementation(libs.mockk)
     implementation(libs.ktor.serialization.kotlinx.json)
     testImplementation(project(":account-impl"))
 }

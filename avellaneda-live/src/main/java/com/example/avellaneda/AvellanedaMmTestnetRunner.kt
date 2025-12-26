@@ -151,7 +151,10 @@ object AvellanedaMmTestnetRunner {
             } else {
                 koin.get<AccountStateRepository>()
             }
-            val walletConfig = InventoryWalletConfig.default()
+            val walletConfig = InventoryWalletConfig.default().let { cfg ->
+                val autoPersist = System.getenv("WALLET_AUTOPERSIST")?.toBooleanStrictOrNull()
+                if (autoPersist == null) cfg else cfg.copy(autoPersist = autoPersist)
+            }
             if (resetWallet) {
                 File(walletConfig.walletCsvPath).delete()
             }

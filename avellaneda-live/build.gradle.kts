@@ -26,4 +26,7 @@ dependencies {
     implementation(project(":network"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.koin.core)
+    testImplementation(kotlin("test"))
+    testImplementation(libs.junit)
+    testImplementation(libs.mockk)
 }

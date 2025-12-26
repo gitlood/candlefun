@@ -17,4 +17,7 @@ dependencies {
     implementation(project(":execution-domain"))
     implementation(project(":execution-impl"))
     implementation(libs.kotlinx.coroutines.core)
+    testImplementation(kotlin("test"))
+    testImplementation(libs.junit)
+    testImplementation(libs.mockk)
 }
