@@ -12,6 +12,7 @@ import com.example.avellaneda.report.AvellanedaReportRow
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.Telemetry
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
@@ -34,6 +35,7 @@ import kotlin.time.Duration.Companion.milliseconds
 object AvellanedaMmLiveRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("avellaneda_live")
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "FUTURES").uppercase()
         val symbolsEnv = System.getenv("SYMBOLS")
         val topN = System.getenv("TOP_N")?.toIntOrNull() ?: 50

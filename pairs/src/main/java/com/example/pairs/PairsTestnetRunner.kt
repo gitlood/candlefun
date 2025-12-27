@@ -21,6 +21,7 @@ import com.example.network.futures.interfaces.FuturesSymbolFilters
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -37,6 +38,7 @@ import java.math.BigDecimal
 object PairsTestnetRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("pairs_testnet")
         val symbolA = System.getenv("SYMBOL_A") ?: "BTCUSDT"
         val symbolB = System.getenv("SYMBOL_B") ?: "ETHUSDT"
         val tickMs = System.getenv("TICK_MS")?.toLongOrNull() ?: 250L

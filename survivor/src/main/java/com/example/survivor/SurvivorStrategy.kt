@@ -9,6 +9,7 @@ import com.example.execution.domain.OrderRequest
 import com.example.execution.domain.TimeInForce
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import com.example.platform.report.Telemetry
 import kotlin.math.abs
 
 class SurvivorStrategy(
@@ -34,9 +35,25 @@ class SurvivorStrategy(
         updateFundingTimestamp(snapshot.nextFundingTimeMs)
         cancelStaleOrders(now)
 
-        if (!regimeOk(snapshot)) return
-
+        val regimeOk = regimeOk(snapshot)
         val desired = desiredSide(snapshot)
+        Telemetry.emit(
+            type = "strategy_signal",
+            tsMs = now,
+            data = mapOf(
+                "strategy_id" to "survivor",
+                "symbol" to config.symbol,
+                "funding_rate" to snapshot.fundingRate,
+                "basis_pct" to snapshot.basisPct,
+                "volatility" to snapshot.volatility,
+                "spread_pct" to snapshot.spreadPct,
+                "open_interest" to snapshot.openInterest,
+                "regime_ok" to regimeOk,
+                "desired_side" to desired.name
+            )
+        )
+        if (!regimeOk) return
+
         if (side == SurvivorSide.FLAT && desired == SurvivorSide.FLAT) {
             gateStats?.flatFunding = gateStats?.flatFunding?.plus(1) ?: 0
             return
@@ -88,6 +105,21 @@ class SurvivorStrategy(
         val orderSide = if (desired == SurvivorSide.LONG_PERP) OrderSide.BUY else OrderSide.SELL
         val price = snapshot.markPrice
         val qty = config.orderQty
+        val signedQty = if (orderSide == OrderSide.BUY) qty else -qty
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = snapshot.timestampMs,
+            data = mapOf(
+                "strategy_id" to "survivor",
+                "symbol" to config.symbol,
+                "desired_delta" to signedQty,
+                "urgency" to "LOW",
+                "prefer_maker" to true,
+                "ttl_ms" to config.orderTtlMs,
+                "limit_price" to price,
+                "reason" to "funding_entry"
+            )
+        )
         val request = OrderRequest(
             symbol = Symbol.of(config.symbol),
             side = orderSide,
@@ -114,6 +146,21 @@ class SurvivorStrategy(
         val orderSide = if (side == SurvivorSide.LONG_PERP) OrderSide.SELL else OrderSide.BUY
         val price = snapshot.markPrice
         val qty = config.orderQty
+        val signedQty = if (orderSide == OrderSide.BUY) qty else -qty
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = snapshot.timestampMs,
+            data = mapOf(
+                "strategy_id" to "survivor",
+                "symbol" to config.symbol,
+                "desired_delta" to signedQty,
+                "urgency" to "HIGH",
+                "prefer_maker" to true,
+                "ttl_ms" to config.orderTtlMs,
+                "limit_price" to price,
+                "reason" to "funding_exit"
+            )
+        )
         val request = OrderRequest(
             symbol = Symbol.of(config.symbol),
             side = orderSide,

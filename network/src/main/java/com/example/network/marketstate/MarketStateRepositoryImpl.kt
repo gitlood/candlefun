@@ -8,6 +8,7 @@ import com.example.network.interfaces.LiveAggTradeRepo
 import com.example.network.interfaces.LiveBookTickerRepo
 import com.example.network.interfaces.LiveDepthRepo
 import com.example.platform.model.MarketState
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -16,6 +17,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlin.random.Random
 
 internal class MarketStateRepositoryImpl(
     private val bookTickerRepo: LiveBookTickerRepo,
@@ -25,6 +27,10 @@ internal class MarketStateRepositoryImpl(
     private val clockMs: () -> Long = { System.currentTimeMillis() }
 ) : MarketStateRepository {
     private val snapshotSemaphore = Semaphore(1)
+    private val lastTelemetryMs = mutableMapOf<String, Long>()
+    private val telemetryIntervalMs = System.getenv("TELEMETRY_MARKET_SNAPSHOT_MS")?.toLongOrNull() ?: 0L
+    private val telemetrySamplePct =
+        System.getenv("TELEMETRY_MARKET_SNAPSHOT_SAMPLE_PCT")?.toDoubleOrNull()?.coerceIn(0.0, 100.0) ?: 100.0
 
     override fun streamMarketState(
         symbols: List<Symbol>,
@@ -76,6 +82,7 @@ internal class MarketStateRepositoryImpl(
                 val now = clockMs()
                 for (symbol in normalized) {
                     val snapshot = assembler.build(symbol, now) ?: continue
+                    maybeEmitTelemetry(snapshot)
                     send(snapshot)
                 }
             }
@@ -97,5 +104,41 @@ internal class MarketStateRepositoryImpl(
         } catch (_: Exception) {
             resyncer.markFailure(symbol)
         }
+    }
+
+    private fun depthTopNotional(snapshot: MarketState): Double {
+        var sum = 0.0
+        for (level in snapshot.bidLevels) sum += level.price * level.quantity
+        for (level in snapshot.askLevels) sum += level.price * level.quantity
+        return sum
+    }
+
+    private fun maybeEmitTelemetry(snapshot: MarketState) {
+        if (telemetrySamplePct <= 0.0) return
+        if (telemetrySamplePct < 100.0 && Random.nextDouble(0.0, 100.0) > telemetrySamplePct) return
+        val now = snapshot.eventTimeMs ?: snapshot.timestampMs
+        val last = lastTelemetryMs[snapshot.symbol] ?: 0L
+        if (telemetryIntervalMs > 0L && now - last < telemetryIntervalMs) return
+        lastTelemetryMs[snapshot.symbol] = now
+        Telemetry.emit(
+            type = "market_snapshot",
+            tsMs = now,
+            data = mapOf(
+                "symbol" to snapshot.symbol,
+                "mid" to snapshot.midPrice,
+                "spread" to snapshot.spread,
+                "microprice" to snapshot.microPrice,
+                "best_bid" to snapshot.bestBidPrice,
+                "best_ask" to snapshot.bestAskPrice,
+                "depth_top_notional" to depthTopNotional(snapshot),
+                "depth_imbalance" to snapshot.depthImbalance,
+                "ofi_1s" to snapshot.ofi1s,
+                "trade_count_1s" to snapshot.tradeCount1s,
+                "trade_imbalance_1s" to snapshot.tradeImbalance1s,
+                "vol_1s" to snapshot.vol1s,
+                "vol_5s" to snapshot.vol5s,
+                "vol_10s" to snapshot.vol10s
+            )
+        )
     }
 }

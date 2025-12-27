@@ -10,6 +10,7 @@ import com.example.execution.domain.StrategyRegimeState
 import com.example.execution.domain.confidenceWeight
 import com.example.execution.domain.riskUnits
 import com.example.platform.model.enums.OrderType
+import com.example.platform.report.Telemetry
 import java.math.BigDecimal
 
 /**
@@ -50,7 +51,27 @@ class IntentAllocator(
             val totalSell = sells.fold(Qty.ZERO) { acc, alloc -> acc + Qty(alloc.acceptedDelta.value.abs()) }
             val cross = minOf(totalBuy, totalSell)
             val net = totalBuy - totalSell
-            NettingSummary(symbol, totalBuy, totalSell, cross, net, allocations)
+            val summary = NettingSummary(symbol, totalBuy, totalSell, cross, net, allocations)
+            Telemetry.emit(
+                type = "netting_result",
+                tsMs = System.currentTimeMillis(),
+                data = mapOf(
+                    "symbol" to symbol.value,
+                    "total_buy" to totalBuy.value.toDouble(),
+                    "total_sell" to totalSell.value.toDouble(),
+                    "cross_qty" to cross.value.toDouble(),
+                    "net_delta" to net.value.toDouble(),
+                    "allocations" to allocations.map { alloc ->
+                        mapOf(
+                            "strategy_id" to alloc.intent.strategyId,
+                            "accepted_delta" to alloc.acceptedDelta.value.toDouble(),
+                            "applied_scale" to alloc.appliedScale,
+                            "rejection_reason" to alloc.rejectionReason
+                        )
+                    }
+                )
+            )
+            summary
         }
 
         val routed = netSummaries.mapNotNull { summary ->
@@ -93,7 +114,20 @@ class IntentAllocator(
                 preferMaker = topIntent.preferMaker,
                 maxSlippageBps = topIntent.maxSlippageBps,
                 clientOrderId = "NET-${summary.symbol}-${System.nanoTime()}"
-            )
+            ).also { decision ->
+                Telemetry.emit(
+                    type = "routing_decision",
+                    tsMs = System.currentTimeMillis(),
+                    data = mapOf(
+                        "symbol" to decision.symbol.value,
+                        "net_delta" to decision.netDelta.value.toDouble(),
+                        "order_type" to decision.orderType.name,
+                        "prefer_maker" to decision.preferMaker,
+                        "max_slippage_bps" to decision.maxSlippageBps,
+                        "client_order_id" to decision.clientOrderId
+                    )
+                )
+            }
         }
 
         return netSummaries to routed

@@ -40,12 +40,19 @@ class SurvivorStrategyTest {
         assertTrue(gateway.placed.isEmpty())
     }
 
-    private fun snapshot(funding: Double, mark: Double, index: Double, vol: Double = 0.01): SurvivorSnapshot {
+
+    private fun snapshot(
+        funding: Double,
+        mark: Double,
+        index: Double,
+        vol: Double = 0.01,
+        ts: Long = 1_000L
+    ): SurvivorSnapshot {
         return SurvivorSnapshot(
             symbol = "BTCUSDT",
-            timestampMs = System.currentTimeMillis(),
+            timestampMs = ts,
             fundingRate = funding,
-            nextFundingTimeMs = System.currentTimeMillis(),
+            nextFundingTimeMs = ts + 1,
             markPrice = mark,
             indexPrice = index,
             spreadPct = 0.0005,

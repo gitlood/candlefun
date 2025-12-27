@@ -6,12 +6,14 @@ import com.example.execution.impl.SimExecutionGateway
 import com.example.marketdata.impl.replay.MarketStateReplayer
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
 object PairsBacktestRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("pairs_backtest")
         val inputPath = args.getOrNull(0)
             ?: System.getenv("MARKETSTATE_CSV")
             ?: defaultMarketStatePath()

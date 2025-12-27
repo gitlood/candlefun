@@ -12,6 +12,7 @@ import com.example.execution.domain.TimeInForce
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import com.example.platform.report.Telemetry
 import java.math.BigDecimal
 import java.math.RoundingMode
 import kotlin.math.abs
@@ -43,6 +44,19 @@ class AvellanedaMmStrategy(
         val spreadPct = spread / mid
         gate.addSpreadSample(now, spreadPct)
         val gateReason = gate.check(state, spreadPct, now)
+        Telemetry.emit(
+            type = "strategy_signal",
+            tsMs = now,
+            data = mapOf(
+                "strategy_id" to "avellaneda_mm",
+                "symbol" to config.symbol,
+                "spread_pct" to spreadPct,
+                "mid" to mid,
+                "vol_1s" to state.vol1s,
+                "depth_imbalance" to state.depthImbalance,
+                "gate_reason" to gateReason
+            )
+        )
         if (gateReason != null) {
             if (config.logGateDecisions && gateReason != lastGateReason) {
                 println("gate=${config.symbol} reason=$gateReason")
@@ -80,6 +94,20 @@ class AvellanedaMmStrategy(
         val allowAsk = positionQty > -config.maxInventory && (bestBid == null || ask > bestBid)
 
         if (allowBid) {
+            Telemetry.emit(
+                type = "strategy_intent",
+                tsMs = now,
+                data = mapOf(
+                    "strategy_id" to "avellaneda_mm",
+                    "symbol" to config.symbol,
+                    "desired_delta" to config.orderQty,
+                    "urgency" to "LOW",
+                    "prefer_maker" to true,
+                    "ttl_ms" to config.maxQuoteAgeMs,
+                    "limit_price" to bid,
+                    "reason" to "quote_bid"
+                )
+            )
             lastBidOrderId = ensureOrder(
                 side = OrderSide.BUY,
                 price = bid,
@@ -93,6 +121,20 @@ class AvellanedaMmStrategy(
         }
 
         if (allowAsk) {
+            Telemetry.emit(
+                type = "strategy_intent",
+                tsMs = now,
+                data = mapOf(
+                    "strategy_id" to "avellaneda_mm",
+                    "symbol" to config.symbol,
+                    "desired_delta" to -config.orderQty,
+                    "urgency" to "LOW",
+                    "prefer_maker" to true,
+                    "ttl_ms" to config.maxQuoteAgeMs,
+                    "limit_price" to ask,
+                    "reason" to "quote_ask"
+                )
+            )
             lastAskOrderId = ensureOrder(
                 side = OrderSide.SELL,
                 price = ask,

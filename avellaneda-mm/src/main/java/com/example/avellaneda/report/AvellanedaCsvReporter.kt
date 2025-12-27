@@ -1,5 +1,6 @@
 package com.example.avellaneda.report
 
+import com.example.platform.report.Telemetry
 import java.io.File
 import java.io.FileWriter
 import java.util.Locale
@@ -36,6 +37,28 @@ class AvellanedaCsvReporter private constructor(
         FileWriter(file, true).use { writer ->
             rows.forEach { row ->
                 writer.appendLine(renderRow(row))
+                Telemetry.emit(
+                    type = "kpi_snapshot",
+                    tsMs = row.timestampMs,
+                    data = mapOf(
+                        "strategy_id" to "avellaneda",
+                        "symbol" to row.symbol,
+                        "mid" to row.mid,
+                        "qty" to row.qty,
+                        "avg_price" to row.avg,
+                        "unrealized_pnl" to row.unrealizedPnl,
+                        "realized_pnl" to row.realizedPnl,
+                        "net_pnl" to row.netPnl,
+                        "pnl_pct" to row.pnlPct,
+                        "exposure" to row.exposure,
+                        "fills" to row.fills,
+                        "maker_fills" to row.makerFills,
+                        "taker_fills" to row.takerFills,
+                        "total_fees" to row.totalFees,
+                        "total_notional" to row.totalNotional,
+                        "adv_bps" to row.advBps
+                    )
+                )
             }
         }
     }

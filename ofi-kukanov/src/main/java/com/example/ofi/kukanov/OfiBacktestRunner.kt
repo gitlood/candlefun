@@ -12,6 +12,7 @@ import com.example.marketdata.impl.replay.MarketStateReplayer
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration.Companion.milliseconds
 import java.io.File
@@ -19,6 +20,7 @@ import java.io.File
 object OfiBacktestRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("ofi_backtest")
         val inputPath = args.getOrNull(0)
             ?: System.getenv("MARKETSTATE_CSV")
             ?: defaultMarketStatePath()
@@ -231,6 +233,28 @@ object OfiBacktestRunner {
     }
 
     private fun logKpis(summary: OfiKpiSummary) {
+        Telemetry.emit(
+            type = "kpi_snapshot",
+            tsMs = System.currentTimeMillis(),
+            data = mapOf(
+                "strategy_id" to "ofi_kukanov",
+                "mode" to "backtest",
+                "realized_pnl" to summary.realizedPnl,
+                "unrealized_pnl" to summary.unrealizedPnl,
+                "total_fees" to summary.totalFees,
+                "net_pnl" to summary.netPnl,
+                "avg_slippage_bps" to summary.avgSlippageBps,
+                "avg_join_edge_bps" to summary.avgJoinEdgeBps,
+                "avg_adverse_bps" to summary.avgAdverseMoveBps,
+                "avg_latency_ms" to summary.avgLatencyMs,
+                "trade_count" to summary.tradeCount,
+                "win_rate" to summary.winRate,
+                "fill_rate" to summary.fillRate,
+                "cancel_rate" to summary.cancelRate,
+                "stale_cancel_rate" to summary.staleCancelRate,
+                "take_rate" to summary.takeRate
+            )
+        )
         val winRate = summary.winRate?.let { "%.2f%%".format(it * 100.0) } ?: "NA"
         val slip = summary.avgSlippageBps?.let { "%.3f".format(it) } ?: "NA"
         val joinEdge = summary.avgJoinEdgeBps?.let { "%.3f".format(it) } ?: "NA"

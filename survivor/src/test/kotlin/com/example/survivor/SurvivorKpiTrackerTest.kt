@@ -47,6 +47,20 @@ class SurvivorKpiTrackerTest {
         assertNotNull(summary.netCarry)
     }
 
+    @Test
+    fun `kpi tracker records cancels and position updates`() {
+        val config = SurvivorConfig(symbol = "BTCUSDT")
+        val tracker = SurvivorKpiTracker(config)
+        tracker.onOrderPlaced(1L, snapshot(ts = 1_000L, funding = 0.0, nextFunding = 2_000L), SurvivorSide.LONG_PERP)
+        tracker.onOrderCanceled(1L, stale = true)
+        tracker.onPositionUpdate("BTCUSDT", qty = 2.0, avgPrice = 100.0)
+        tracker.onMark(snapshot(ts = 2_000L, funding = 0.0, nextFunding = 3_000L), SurvivorSide.LONG_PERP)
+
+        val summary = tracker.summary()
+        assertNotNull(summary.cancelRate)
+        assertNotNull(summary.staleCancelRate)
+    }
+
     private fun snapshot(ts: Long, funding: Double, nextFunding: Long): SurvivorSnapshot {
         return SurvivorSnapshot(
             symbol = "BTCUSDT",

@@ -1,10 +1,24 @@
 package com.example.pairs
 
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.Telemetry
 import java.util.Locale
 
 object PairsReport {
     fun print(summary: PairsKpiSummary, label: String = "PAIRS KPI") {
+        Telemetry.emit(
+            type = "kpi_snapshot",
+            tsMs = System.currentTimeMillis(),
+            data = mapOf(
+                "strategy_id" to "pairs",
+                "mode" to inferMode(label),
+                "avg_half_life_ms" to summary.avgHalfLifeMs,
+                "tail_events" to summary.tailEvents,
+                "realized_pnl" to summary.realizedPnL,
+                "total_fees" to summary.totalFees,
+                "net_pnl" to summary.netPnL
+            )
+        )
         println(render(summary, label))
     }
 

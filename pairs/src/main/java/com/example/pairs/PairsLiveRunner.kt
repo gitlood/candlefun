@@ -12,6 +12,7 @@ import com.example.network.futures.di.futuresModule
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
@@ -21,6 +22,7 @@ import kotlin.time.Duration.Companion.milliseconds
 object PairsLiveRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("pairs_live")
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "FUTURES").uppercase()
         val symbolA = System.getenv("SYMBOL_A") ?: "BTCUSDT"
         val symbolB = System.getenv("SYMBOL_B") ?: "ETHUSDT"

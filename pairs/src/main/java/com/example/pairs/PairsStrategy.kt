@@ -10,6 +10,7 @@ import com.example.execution.domain.TimeInForce
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import com.example.platform.report.Telemetry
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.max
@@ -52,7 +53,23 @@ class PairsStrategy(
         cancelStaleOrders(now)
         val signal = buildSignal(a, b, now) ?: return
 
-        if (!regimeOk(a, b, signal)) return
+        val ok = regimeOk(a, b, signal)
+        Telemetry.emit(
+            type = "strategy_signal",
+            tsMs = now,
+            data = mapOf(
+                "strategy_id" to "pairs",
+                "symbol_a" to config.symbolA,
+                "symbol_b" to config.symbolB,
+                "z_score" to signal.zScore,
+                "beta" to signal.beta,
+                "corr" to signal.corr,
+                "spread" to signal.spread,
+                "regime_ok" to ok,
+                "trend_count" to trendCount
+            )
+        )
+        if (!ok) return
 
         if (side == PairSide.FLAT) {
             if (now - lastSignalMs < 100L) return
@@ -137,6 +154,34 @@ class PairsStrategy(
         val qtyA = notionalQty(priceA, config.qtyStepA, config.minQtyA, config.minNotionalA)
         val qtyB = notionalQty(priceB, config.qtyStepB, config.minQtyB, config.minNotionalB)
         if (qtyA <= 0.0 || qtyB <= 0.0) return
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = signal.timestampMs,
+            data = mapOf(
+                "strategy_id" to "pairs",
+                "symbol" to config.symbolA,
+                "desired_delta" to if (sideA == OrderSide.BUY) qtyA else -qtyA,
+                "urgency" to "LOW",
+                "prefer_maker" to true,
+                "ttl_ms" to config.orderTtlMs,
+                "limit_price" to priceA,
+                "reason" to "pairs_entry"
+            )
+        )
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = signal.timestampMs,
+            data = mapOf(
+                "strategy_id" to "pairs",
+                "symbol" to config.symbolB,
+                "desired_delta" to if (sideB == OrderSide.BUY) qtyB else -qtyB,
+                "urgency" to "LOW",
+                "prefer_maker" to true,
+                "ttl_ms" to config.orderTtlMs,
+                "limit_price" to priceB,
+                "reason" to "pairs_entry"
+            )
+        )
 
         val orderA = gateway.placeOrder(
             OrderRequest(
@@ -186,6 +231,34 @@ class PairsStrategy(
         val qtyA = notionalQty(priceA, config.qtyStepA, config.minQtyA, config.minNotionalA)
         val qtyB = notionalQty(priceB, config.qtyStepB, config.minQtyB, config.minNotionalB)
         if (qtyA <= 0.0 || qtyB <= 0.0) return
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = signal.timestampMs,
+            data = mapOf(
+                "strategy_id" to "pairs",
+                "symbol" to config.symbolA,
+                "desired_delta" to if (sideA == OrderSide.BUY) qtyA else -qtyA,
+                "urgency" to "HIGH",
+                "prefer_maker" to true,
+                "ttl_ms" to config.orderTtlMs,
+                "limit_price" to priceA,
+                "reason" to "pairs_exit"
+            )
+        )
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = signal.timestampMs,
+            data = mapOf(
+                "strategy_id" to "pairs",
+                "symbol" to config.symbolB,
+                "desired_delta" to if (sideB == OrderSide.BUY) qtyB else -qtyB,
+                "urgency" to "HIGH",
+                "prefer_maker" to true,
+                "ttl_ms" to config.orderTtlMs,
+                "limit_price" to priceB,
+                "reason" to "pairs_exit"
+            )
+        )
 
         gateway.placeOrder(
             OrderRequest(

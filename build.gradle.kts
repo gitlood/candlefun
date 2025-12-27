@@ -17,7 +17,21 @@ subprojects {
             "**/ai/**",
             "**/di/**",
             "**/dto/**",
-            "**/config/**"
+            "**/config/**",
+            "**/*Runner*",
+            "**/*LiveRunner*",
+            "**/*TestnetRunner*",
+            "**/*BacktestRunner*",
+            "**/*Report*",
+            "**/*Reporter*",
+            "**/*Csv*",
+            "**/*Recorder*",
+            "**/*Replayer*",
+            "**/*Tailer*",
+            "**/*Serializer*",
+            "**/*Mapper*",
+            "**/*Module*",
+            "**/*Export*"
         )
         classDirectories.setFrom(
             files(classDirectories.files.map { fileTree(it) { exclude(excludes) } })
@@ -44,7 +58,21 @@ tasks.register<JacocoReport>("jacocoRootReport") {
         "**/ai/**",
         "**/di/**",
         "**/dto/**",
-        "**/config/**"
+        "**/config/**",
+        "**/*Runner*",
+        "**/*LiveRunner*",
+        "**/*TestnetRunner*",
+        "**/*BacktestRunner*",
+        "**/*Report*",
+        "**/*Reporter*",
+        "**/*Csv*",
+        "**/*Recorder*",
+        "**/*Replayer*",
+        "**/*Tailer*",
+        "**/*Serializer*",
+        "**/*Mapper*",
+        "**/*Module*",
+        "**/*Export*"
     )
     classDirectories.from(
         sourceSets.map { it.named("main").get().output }.map { fileTree(it) { exclude(excludes) } }

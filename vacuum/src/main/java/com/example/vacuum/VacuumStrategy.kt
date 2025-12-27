@@ -11,6 +11,7 @@ import com.example.platform.model.BookLevel
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import com.example.platform.report.Telemetry
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -39,6 +40,18 @@ class VacuumStrategy(
         syncPosition(now)
 
         val signal = buildSignal(state, now) ?: return
+        Telemetry.emit(
+            type = "strategy_signal",
+            tsMs = now,
+            data = mapOf(
+                "strategy_id" to "vacuum",
+                "symbol" to config.symbol,
+                "depth_drop_pct" to signal.depthDropPct,
+                "spread_pct" to signal.spreadPct,
+                "trade_count_1s" to signal.tradeCount,
+                "trade_imbalance_1s" to signal.tradeImbalance
+            )
+        )
         if (now < pausedUntilMs) return
 
         if (positionSide == null) {
@@ -107,6 +120,21 @@ class VacuumStrategy(
         val price = aggressivePrice(side, state) ?: return
         val qty = roundDown(config.orderQty, config.qtyStep)
         if (qty <= 0.0) return
+        val signedQty = if (side == OrderSide.BUY) qty else -qty
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = now,
+            data = mapOf(
+                "strategy_id" to "vacuum",
+                "symbol" to config.symbol,
+                "desired_delta" to signedQty,
+                "urgency" to "HIGH",
+                "prefer_maker" to false,
+                "ttl_ms" to config.orderTtlMs,
+                "limit_price" to price,
+                "reason" to "vacuum_entry"
+            )
+        )
         val order = gateway.placeOrder(
             OrderRequest(
                 symbol = Symbol.of(config.symbol),
@@ -146,6 +174,21 @@ class VacuumStrategy(
         val price = aggressivePrice(side, state) ?: return
         val qty = currentPositionQty()
         if (qty <= 0.0) return
+        val signedQty = if (side == OrderSide.BUY) qty else -qty
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = now,
+            data = mapOf(
+                "strategy_id" to "vacuum",
+                "symbol" to config.symbol,
+                "desired_delta" to signedQty,
+                "urgency" to "HIGH",
+                "prefer_maker" to false,
+                "ttl_ms" to config.orderTtlMs,
+                "limit_price" to price,
+                "reason" to "vacuum_exit"
+            )
+        )
         val order = gateway.placeOrder(
             OrderRequest(
                 symbol = Symbol.of(config.symbol),

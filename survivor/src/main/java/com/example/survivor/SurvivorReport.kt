@@ -1,10 +1,27 @@
 package com.example.survivor
 
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.Telemetry
 import java.util.Locale
 
 object SurvivorReport {
     fun print(summary: SurvivorKpiSummary, label: String = "SURVIVOR KPI") {
+        Telemetry.emit(
+            type = "kpi_snapshot",
+            tsMs = System.currentTimeMillis(),
+            data = mapOf(
+                "strategy_id" to "survivor",
+                "mode" to inferMode(label),
+                "realized_funding" to summary.realizedFunding,
+                "realized_fees" to summary.realizedFees,
+                "borrow_costs" to summary.borrowCosts,
+                "net_carry" to summary.netCarry,
+                "expected_carry" to summary.expectedCarry,
+                "worst_basis_abs_pct" to summary.worstBasisAbsPct,
+                "cancel_rate" to summary.cancelRate,
+                "stale_cancel_rate" to summary.staleCancelRate
+            )
+        )
         println(render(summary, label))
     }
 

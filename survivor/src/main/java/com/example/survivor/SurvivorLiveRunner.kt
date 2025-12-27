@@ -2,12 +2,14 @@ package com.example.survivor
 
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
 object SurvivorLiveRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("survivor_live")
         val inputPath = args.getOrNull(0)
             ?: System.getenv("SURVIVOR_TAIL_CSV")
             ?: defaultPath()

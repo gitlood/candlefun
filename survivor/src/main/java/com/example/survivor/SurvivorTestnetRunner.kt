@@ -11,6 +11,7 @@ import com.example.network.futures.interfaces.FuturesMarketDataService
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -28,6 +29,7 @@ import java.io.File
 object SurvivorTestnetRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("survivor_testnet")
         val symbol = System.getenv("SYMBOL") ?: "BTCUSDT"
         val tickMs = System.getenv("TICK_MS")?.toLongOrNull() ?: 1_000L
         val depthLevels = System.getenv("DEPTH_LEVELS")?.toIntOrNull() ?: 5

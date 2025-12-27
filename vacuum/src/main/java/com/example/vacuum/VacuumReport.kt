@@ -1,10 +1,25 @@
 package com.example.vacuum
 
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.Telemetry
 import java.util.Locale
 
 object VacuumReport {
     fun print(summary: VacuumKpiSummary, label: String = "VACUUM KPI") {
+        Telemetry.emit(
+            type = "kpi_snapshot",
+            tsMs = System.currentTimeMillis(),
+            data = mapOf(
+                "strategy_id" to "vacuum",
+                "mode" to inferMode(label),
+                "avg_slippage_bps" to summary.avgSlippageBps,
+                "avg_adverse_bps" to summary.avgAdverseMoveBps,
+                "tail_loss_count" to summary.tailLossCount,
+                "last_slippage_bps" to summary.lastSlippageBps,
+                "cancel_rate" to summary.cancelRate,
+                "stale_cancel_rate" to summary.staleCancelRate
+            )
+        )
         println(render(summary, label))
     }
 

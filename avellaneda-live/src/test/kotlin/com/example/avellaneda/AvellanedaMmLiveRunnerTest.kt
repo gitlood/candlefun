@@ -13,15 +13,15 @@ import io.mockk.unmockkStatic
 import io.mockk.coEvery
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Test
+import kotlin.test.Ignore
 import org.koin.core.Koin
 import org.koin.core.KoinApplication
 import org.koin.core.context.GlobalContext
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
-import kotlin.test.Ignore
 
 class AvellanedaMmLiveRunnerTest {
-    @Ignore
+    @Ignore("Runner main path can block; covered by helper tests")
     @Test
     fun `main runs with mocked koin`() {
         mockkStatic("org.koin.core.context.GlobalContextKt")

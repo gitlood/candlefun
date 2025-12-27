@@ -31,16 +31,16 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Test
+import kotlin.test.Ignore
 import org.koin.core.Koin
 import org.koin.core.KoinApplication
 import org.koin.core.context.GlobalContext
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.core.qualifier.named
-import kotlin.test.Ignore
 
 class AvellanedaMmTestnetRunnerTest {
-    @Ignore
+    @Ignore("Runner main path can block; covered by helper tests")
     @Test
     fun `main runs with mocked dependencies`() {
         mockkStatic("org.koin.core.context.GlobalContextKt")

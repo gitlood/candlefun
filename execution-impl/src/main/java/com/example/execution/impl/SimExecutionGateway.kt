@@ -17,6 +17,7 @@ import com.example.execution.domain.OrderStatus
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import com.example.platform.report.Telemetry
 import java.math.BigDecimal
 import java.util.concurrent.atomic.AtomicLong
 
@@ -53,6 +54,7 @@ class SimExecutionGateway(
             transactTimeMs = System.currentTimeMillis()
         )
         orders[orderId] = order
+        emitOrderEvent(order, "NEW")
         return order
     }
 
@@ -60,10 +62,20 @@ class SimExecutionGateway(
         val order = findOrder(request) ?: error("order not found")
         val canceled = order.copy(status = OrderStatus.CANCELED, transactTimeMs = System.currentTimeMillis())
         orders[order.orderId] = canceled
+        emitOrderEvent(canceled, "CANCEL")
         return canceled
     }
 
     override suspend fun replaceOrder(cancelRequest: OrderCancelRequest, newRequest: OrderRequest): ExecutionOrder {
+        Telemetry.emit(
+            type = "order_event",
+            tsMs = System.currentTimeMillis(),
+            data = mapOf(
+                "event_type" to "REPLACE",
+                "symbol" to newRequest.symbol.value,
+                "client_order_id" to newRequest.clientOrderId
+            )
+        )
         cancelOrder(cancelRequest)
         return placeOrder(newRequest)
     }
@@ -87,6 +99,8 @@ class SimExecutionGateway(
 
         val fills = fillSimulator.matchFills(state, openOrders)
         if (fills.isEmpty()) return
+        val mid = state.midPrice ?: state.microPrice
+        val spread = state.spread
 
         for (fill in fills) {
             val order = orders[fill.orderId] ?: continue
@@ -101,6 +115,19 @@ class SimExecutionGateway(
                 executedQty = newExecuted,
                 status = newStatus,
                 transactTimeMs = fill.fillTimeMs
+            )
+            Telemetry.emit(
+                type = "fill_event",
+                tsMs = fill.fillTimeMs,
+                data = mapOf(
+                    "symbol" to fill.symbol.value,
+                    "order_id" to fill.orderId,
+                    "side" to fill.side.name,
+                    "price" to fill.price.value.toDouble(),
+                    "qty" to fill.quantity.value.toDouble(),
+                    "mid_at_fill" to mid,
+                    "spread_at_fill" to spread
+                )
             )
             fillListener?.invoke(fill)
             applyFillToPosition(fill)
@@ -161,6 +188,26 @@ class SimExecutionGateway(
         if (feeRate <= 0.0) return com.example.account.domain.Money.ZERO
         val notional = fill.price.value.multiply(fill.quantity.value)
         return com.example.account.domain.Money(notional.multiply(java.math.BigDecimal.valueOf(feeRate)))
+    }
+
+    private fun emitOrderEvent(order: ExecutionOrder, eventType: String) {
+        Telemetry.emit(
+            type = "order_event",
+            tsMs = order.transactTimeMs,
+            data = mapOf(
+                "event_type" to eventType,
+                "symbol" to order.symbol.value,
+                "order_id" to order.orderId,
+                "client_order_id" to order.clientOrderId,
+                "side" to order.side.name,
+                "type" to order.type.name,
+                "price" to order.price.value.toDouble(),
+                "qty" to order.originalQty.value.toDouble(),
+                "executed_qty" to order.executedQty.value.toDouble(),
+                "status" to order.status.name,
+                "time_in_force" to order.timeInForce?.name
+            )
+        )
     }
 }
 

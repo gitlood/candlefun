@@ -21,6 +21,7 @@ import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -37,6 +38,7 @@ import java.math.BigDecimal
 object VacuumTestnetRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("vacuum_testnet")
         val symbolsEnv = System.getenv("SYMBOLS")
         val tickMs = System.getenv("TICK_MS")?.toLongOrNull() ?: 250L
         val depthLevels = System.getenv("DEPTH_LEVELS")?.toIntOrNull() ?: 10

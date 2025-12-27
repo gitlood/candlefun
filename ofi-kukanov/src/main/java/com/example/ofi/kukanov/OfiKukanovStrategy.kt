@@ -10,6 +10,7 @@ import com.example.execution.domain.TimeInForce
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import com.example.platform.report.Telemetry
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -42,12 +43,33 @@ class OfiKukanovStrategy(
         val posQty = positionQty()
         updateEntryTime(posQty, now)
 
+        val spreadOk = isSpreadStable(spreadPct, now)
+        val depthOk = isDepthHealthy(signal)
+        val tradeOk = isTradeConfirmed(state, normalized)
+        Telemetry.emit(
+            type = "strategy_signal",
+            tsMs = now,
+            data = mapOf(
+                "strategy_id" to "ofi_kukanov",
+                "symbol" to config.symbol,
+                "normalized_ofi" to normalized,
+                "spread_pct" to spreadPct,
+                "depth_notional" to signal.depthNotional,
+                "depth_qty" to signal.depthQty,
+                "trade_count_1s" to state.tradeCount1s,
+                "trade_imbalance_1s" to state.tradeImbalance1s,
+                "spread_ok" to spreadOk,
+                "depth_ok" to depthOk,
+                "trade_ok" to tradeOk
+            )
+        )
+
         if (now - lastActionMs < config.minSignalIntervalMs) return
 
         if (posQty == 0.0) {
-            if (!isSpreadStable(spreadPct, now)) return
-            if (!isDepthHealthy(signal)) return
-            if (!isTradeConfirmed(state, normalized)) return
+            if (!spreadOk) return
+            if (!depthOk) return
+            if (!tradeOk) return
             if (abs(normalized) >= config.entryThreshold) {
                 val side = if (normalized > 0.0) OrderSide.BUY else OrderSide.SELL
                 val style = resolveEntryStyle(normalized)
@@ -78,6 +100,21 @@ class OfiKukanovStrategy(
         val qty = roundDown(config.orderQty, config.qtyStep)
         if (qty <= 0.0) return
         cancelOpenOrders()
+        val signedQty = if (side == OrderSide.BUY) qty else -qty
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = nowMs,
+            data = mapOf(
+                "strategy_id" to "ofi_kukanov",
+                "symbol" to config.symbol,
+                "desired_delta" to signedQty,
+                "urgency" to "MEDIUM",
+                "prefer_maker" to (style == OfiOrderStyle.JOIN),
+                "ttl_ms" to if (style == OfiOrderStyle.TAKE) config.takeOrderTtlMs else config.orderTtlMs,
+                "limit_price" to price,
+                "reason" to "ofi_entry"
+            )
+        )
         val request = OrderRequest(
             symbol = Symbol.of(config.symbol),
             side = side,
@@ -114,6 +151,21 @@ class OfiKukanovStrategy(
         val qty = roundDown(abs(posQty), config.qtyStep)
         if (qty <= 0.0) return
         cancelOpenOrders()
+        val signedQty = if (side == OrderSide.BUY) qty else -qty
+        Telemetry.emit(
+            type = "strategy_intent",
+            tsMs = nowMs,
+            data = mapOf(
+                "strategy_id" to "ofi_kukanov",
+                "symbol" to config.symbol,
+                "desired_delta" to signedQty,
+                "urgency" to "HIGH",
+                "prefer_maker" to (config.orderStyle == OfiOrderStyle.JOIN),
+                "ttl_ms" to if (config.orderStyle == OfiOrderStyle.TAKE) config.takeOrderTtlMs else config.orderTtlMs,
+                "limit_price" to price,
+                "reason" to "ofi_exit"
+            )
+        )
         val request = OrderRequest(
             symbol = Symbol.of(config.symbol),
             side = side,

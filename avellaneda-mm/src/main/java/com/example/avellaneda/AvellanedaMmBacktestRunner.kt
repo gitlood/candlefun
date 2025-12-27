@@ -16,6 +16,7 @@ import com.example.avellaneda.report.AvellanedaReportRow
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.math.abs
@@ -23,6 +24,7 @@ import kotlin.math.abs
 object AvellanedaMmBacktestRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("avellaneda_backtest")
         val inputPath = args.getOrNull(0)
             ?: System.getenv("MARKETSTATE_CSV")
             ?: defaultMarketStatePath()

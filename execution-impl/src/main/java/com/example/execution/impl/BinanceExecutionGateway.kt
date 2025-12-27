@@ -17,6 +17,7 @@ import com.example.execution.domain.TimeInForce
 import com.example.network.interfaces.BinanceTestNetApiService
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import com.example.platform.report.Telemetry
 
 class BinanceExecutionGateway(
     private val api: BinanceTestNetApiService,
@@ -32,7 +33,7 @@ class BinanceExecutionGateway(
             timeInForce = request.timeInForce?.name
         )
 
-        return ExecutionOrder(
+        val order = ExecutionOrder(
             symbol = Symbol.of(response.symbol),
             orderId = response.orderId,
             clientOrderId = response.clientOrderId,
@@ -45,6 +46,8 @@ class BinanceExecutionGateway(
             timeInForce = TimeInForce.fromString(response.timeInForce),
             transactTimeMs = response.transactTime
         )
+        emitOrderEvent(order, "NEW")
+        return order
     }
 
     override suspend fun cancelOrder(request: OrderCancelRequest): ExecutionOrder {
@@ -53,10 +56,21 @@ class BinanceExecutionGateway(
             orderId = request.orderId,
             clientOrderId = request.clientOrderId
         )
-        return response.toExecutionOrder()
+        return response.toExecutionOrder().also { order ->
+            emitOrderEvent(order, "CANCEL")
+        }
     }
 
     override suspend fun replaceOrder(cancelRequest: OrderCancelRequest, newRequest: OrderRequest): ExecutionOrder {
+        Telemetry.emit(
+            type = "order_event",
+            tsMs = System.currentTimeMillis(),
+            data = mapOf(
+                "event_type" to "REPLACE",
+                "symbol" to newRequest.symbol.value,
+                "client_order_id" to newRequest.clientOrderId
+            )
+        )
         cancelOrder(cancelRequest)
         return placeOrder(newRequest)
     }
@@ -73,6 +87,26 @@ class BinanceExecutionGateway(
                 averagePrice = Price.ZERO
             )
         }
+    }
+
+    private fun emitOrderEvent(order: ExecutionOrder, eventType: String) {
+        Telemetry.emit(
+            type = "order_event",
+            tsMs = order.transactTimeMs,
+            data = mapOf(
+                "event_type" to eventType,
+                "symbol" to order.symbol.value,
+                "order_id" to order.orderId,
+                "client_order_id" to order.clientOrderId,
+                "side" to order.side.name,
+                "type" to order.type.name,
+                "price" to order.price.value.toDouble(),
+                "qty" to order.originalQty.value.toDouble(),
+                "executed_qty" to order.executedQty.value.toDouble(),
+                "status" to order.status.name,
+                "time_in_force" to order.timeInForce?.name
+            )
+        )
     }
 }
 

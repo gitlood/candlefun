@@ -15,6 +15,7 @@ import com.example.avellaneda.report.AvellanedaReportRow
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.Telemetry
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.impl.EnvExecutionCredentialsProvider
 import com.example.execution.impl.di.executionImplModule
@@ -41,6 +42,7 @@ import kotlin.time.Duration.Companion.milliseconds
 object AvellanedaMmTestnetRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
+        Telemetry.configureFromEnv("avellaneda_testnet")
         val credsProvider = EnvExecutionCredentialsProvider()
         try {
             credsProvider.testnet()
