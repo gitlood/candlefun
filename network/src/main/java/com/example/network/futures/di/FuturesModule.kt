@@ -13,6 +13,7 @@ import com.example.network.futures.interfaces.FuturesLiveBookTickerRepo
 import com.example.network.futures.interfaces.FuturesLiveDepthRepo
 import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
 import com.example.network.futures.interfaces.FuturesExchangeInfoService
+import com.example.network.futures.interfaces.FuturesMarketDataService
 import com.example.network.futures.interfaces.FuturesOrderBookService
 import com.example.network.futures.interfaces.FuturesUserDataService
 import com.example.network.futures.interfaces.FuturesWebSocketService
@@ -21,6 +22,7 @@ import com.example.network.futures.marketdata.FuturesLiveBookTickerRepoImpl
 import com.example.network.futures.marketdata.FuturesLiveDepthRepoImpl
 import com.example.network.futures.marketdata.FuturesMarketStateRepositoryImpl
 import com.example.network.futures.services.FuturesExchangeInfoServiceImpl
+import com.example.network.futures.services.FuturesMarketDataServiceImpl
 import com.example.network.security.BinanceSigner
 import com.example.network.security.TimestampProvider
 import java.io.File
@@ -33,6 +35,7 @@ val futuresModule = module {
 
     single<FuturesWebSocketService> { FuturesWebSocketServiceImpl(get(), get()) }
     single<FuturesOrderBookService> { FuturesOrderBookServiceImpl(get(), get()) }
+    single<FuturesMarketDataService> { FuturesMarketDataServiceImpl(get(), get()) }
 
     single<FuturesLiveBookTickerRepo> { FuturesLiveBookTickerRepoImpl(get()) }
     single<FuturesLiveDepthRepo> { FuturesLiveDepthRepoImpl(get()) }

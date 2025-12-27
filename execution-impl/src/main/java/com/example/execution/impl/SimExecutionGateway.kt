@@ -186,6 +186,8 @@ class SimAccountStateRepository(
 
     fun totalFills(): Int = fills.size
 
+    fun allFills(): List<Fill> = fills.toList()
+
     fun setBalances(next: List<BalanceSnapshot>) {
         balances.clear()
         balances.addAll(next)

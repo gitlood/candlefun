@@ -15,6 +15,7 @@ import com.example.platform.model.enums.OrderType
 import java.math.BigDecimal
 import java.math.RoundingMode
 import kotlin.math.abs
+import kotlin.math.max
 
 class AvellanedaMmStrategy(
     private val gateway: ExecutionGateway,
@@ -112,13 +113,16 @@ class AvellanedaMmStrategy(
         if (nowMs - lastAdaptiveUpdateMs < config.adaptiveSpreadUpdateMs) return
         lastAdaptiveUpdateMs = nowMs
 
-        val advBps = adverseBpsProvider?.invoke(config.symbol)
-        if (advBps == null) return
-        val feeBps = 0.0
-        val requiredBps = (2.0 * feeBps) + (2.0 * advBps) + targetBps
+        val advBpsRaw = adverseBpsProvider?.invoke(config.symbol) ?: 0.0
+        val toxicityBps = max(0.0, advBpsRaw)
+        val feeBps = config.makerFeePct * 10_000.0
+        val requiredBps = (2.0 * feeBps) + targetBps + (2.0 * toxicityBps)
         adaptiveMinSpreadPct = (requiredBps / 10_000.0).coerceAtLeast(config.minSpreadPct)
         if (config.logGateDecisions) {
-            println("adaptiveSpread=${config.symbol} minSpreadPct=${"%.6f".format(adaptiveMinSpreadPct)} advBps=${"%.2f".format(advBps)}")
+            println(
+                "adaptiveSpread=${config.symbol} minSpreadPct=${"%.6f".format(adaptiveMinSpreadPct)} " +
+                    "feeBps=${"%.2f".format(feeBps)} advBps=${"%.2f".format(advBpsRaw)}"
+            )
         }
     }
 

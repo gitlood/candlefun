@@ -4,7 +4,7 @@ plugins {
 }
 
 application {
-    mainClass.set("com.example.ofi.kukanov.OfiBacktestRunner")
+    mainClass.set("com.example.vacuum.VacuumBacktestRunner")
 }
 
 dependencies {
@@ -24,14 +24,21 @@ dependencies {
 
 tasks.register<JavaExec>("runLive") {
     group = "application"
-    description = "Run OFI live paper runner"
+    description = "Run vacuum live paper runner"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.example.ofi.kukanov.OfiLiveRunner")
+    mainClass.set("com.example.vacuum.VacuumLiveRunner")
 }
 
 tasks.register<JavaExec>("runTestnet") {
     group = "application"
-    description = "Run OFI live testnet execution (futures)"
+    description = "Run vacuum testnet runner"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.example.ofi.kukanov.OfiTestnetRunner")
+    mainClass.set("com.example.vacuum.VacuumTestnetRunner")
+}
+
+tasks.register<JavaExec>("runBacktest") {
+    group = "application"
+    description = "Run vacuum backtest runner"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.example.vacuum.VacuumBacktestRunner")
 }

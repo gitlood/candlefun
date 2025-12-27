@@ -21,11 +21,14 @@ object OfiBacktestRunner {
             ?: defaultMarketStatePath()
         val symbolArg = args.getOrNull(1)
         val symbolsEnv = System.getenv("SYMBOLS")
+        val fastMode = System.getenv("FAST_MODE")?.toBooleanStrictOrNull() ?: false
         val speedup = args.getOrNull(2)?.toDoubleOrNull()
             ?: System.getenv("REPLAY_SPEEDUP")?.toDoubleOrNull()
-            ?: 1.0
-        val logEvery = System.getenv("LOG_EVERY_TICKS")?.toLongOrNull() ?: 1_000L
-        val kpiEveryMs = System.getenv("LOG_KPI_EVERY_MS")?.toLongOrNull() ?: 60_000L
+            ?: if (fastMode) 50.0 else 1.0
+        val logEvery = System.getenv("LOG_EVERY_TICKS")?.toLongOrNull()
+            ?: if (fastMode) 10_000L else 1_000L
+        val kpiEveryMs = System.getenv("LOG_KPI_EVERY_MS")?.toLongOrNull()
+            ?: if (fastMode) 300_000L else 60_000L
 
         val inputFile = File(inputPath)
         println("OFI backtest input: ${inputFile.absolutePath}")
@@ -59,7 +62,7 @@ object OfiBacktestRunner {
             fillListener = { fill -> kpiTracker.onFill(fill) }
         )
 
-        val symbols = resolveSymbols(inputPath, symbolArg, symbolsEnv)
+        val symbols = resolveSymbols(inputPath, symbolArg, symbolsEnv, fastMode)
         val ofiConfig = kukanovConfigFromEnv()
         val strategies = symbols.associateWith { symbol ->
             OfiKukanovStrategy(
@@ -118,12 +121,18 @@ object OfiBacktestRunner {
         }
     }
 
-    private fun resolveSymbols(inputPath: String, symbolArg: String?, symbolsEnv: String?): List<String> {
+    private fun resolveSymbols(
+        inputPath: String,
+        symbolArg: String?,
+        symbolsEnv: String?,
+        fastMode: Boolean
+    ): List<String> {
         val raw = symbolArg?.ifBlank { null } ?: symbolsEnv?.ifBlank { null }
         if (raw != null) {
             return raw.split(',').map { it.trim().uppercase() }.filter { it.isNotBlank() }
         }
-        return loadSymbolsFromFile(File(inputPath))
+        val symbols = loadSymbolsFromFile(File(inputPath))
+        return if (fastMode) symbols.take(1) else symbols
     }
 
     private fun loadSymbolsFromFile(file: File): List<String> {

@@ -9,6 +9,7 @@ import com.example.account.impl.di.accountImplModule
 import com.example.account.impl.inventory.CsvInventoryStateRepository
 import com.example.account.impl.inventory.CsvWalletStore
 import com.example.avellaneda.metrics.AdverseSelectionTracker
+import com.example.avellaneda.metrics.FillStats
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.impl.EnvExecutionCredentialsProvider
 import com.example.execution.impl.di.executionImplModule
@@ -241,7 +242,8 @@ object AvellanedaMmTestnetRunner {
                         ?: base.adaptiveSpreadUpdateMs,
                     quoteStyle = parseQuoteStyle(System.getenv("QUOTE_STYLE")),
                     logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull()
-                        ?: base.logGateDecisions
+                        ?: base.logGateDecisions,
+                    makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: base.makerFeePct
                 )
                 if (System.getenv("LOG_CONFIG")?.toBooleanStrictOrNull() == true) {
                     println("config[$symbol]=$cfg")
@@ -256,6 +258,7 @@ object AvellanedaMmTestnetRunner {
             val lastFillTime = mutableMapOf<String, Long>()
             var lastPnlLog = 0L
             var lastFillTotal = 0
+            val fillStats = FillStats()
 
             val symbolList = liveSymbols.map { it.asSymbol() }
             val flow: Flow<MarketState> = if (source == "FUTURES") {
@@ -283,7 +286,8 @@ object AvellanedaMmTestnetRunner {
                             lastFillTime,
                             makerFeePct,
                             takerFeePct,
-                            adverseTracker
+                            adverseTracker,
+                            fillStats
                         )
                     } else {
                         pollFills(liveSymbols, accountRepo, fillCounts)
@@ -307,7 +311,8 @@ object AvellanedaMmTestnetRunner {
                         lastFillTotal,
                         lastPnlLog,
                         now,
-                        adverseTracker
+                        adverseTracker,
+                        fillStats
                     )
                     lastFillTotal = fillCounts.values.sum()
                     lastPnlLog = now
@@ -350,7 +355,8 @@ object AvellanedaMmTestnetRunner {
         lastFillTime: MutableMap<String, Long>,
         makerFeePct: Double,
         takerFeePct: Double,
-        adverseTracker: AdverseSelectionTracker
+        adverseTracker: AdverseSelectionTracker,
+        fillStats: FillStats
     ) {
         for (symbol in symbols) {
             try {
@@ -395,6 +401,11 @@ object AvellanedaMmTestnetRunner {
                             fee = fee
                         )
                     )
+                    val notional = t.price.toDoubleOrNull()?.let { p ->
+                        val q = t.quantity.toDoubleOrNull() ?: return@forEach
+                        p * q
+                    } ?: return@forEach
+                    fillStats.record(notional, makerFeePct, takerFeePct, isMaker = t.maker)
                     adverseTracker.recordFill(
                         t.symbol,
                         side,
@@ -530,7 +541,8 @@ object AvellanedaMmTestnetRunner {
         lastFillTotal: Int,
         lastLogMs: Long,
         nowMs: Long,
-        adverseTracker: AdverseSelectionTracker
+        adverseTracker: AdverseSelectionTracker,
+        fillStats: FillStats
     ) {
         val elapsedSec = ((nowMs - lastLogMs).coerceAtLeast(1L)) / 1000.0
         val totalFills = fillCounts.values.sum()
@@ -555,6 +567,16 @@ object AvellanedaMmTestnetRunner {
                 positions.size,
                 maxAbsQty,
                 sumAbsQty
+            )
+        )
+        println(
+            String.format(
+                "fills: total=%d maker=%d taker=%d notional=%.2f fees=%.4f",
+                fillStats.totalCount(),
+                fillStats.makerCount,
+                fillStats.takerCount,
+                fillStats.totalNotional,
+                fillStats.totalFees
             )
         )
         println("adv: $advStr")

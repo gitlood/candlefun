@@ -28,7 +28,8 @@ data class AvellanedaMmConfig(
     val adaptiveSpreadTargetBps: Double?,
     val adaptiveSpreadUpdateMs: Long,
     val quoteStyle: QuoteStyle,
-    val logGateDecisions: Boolean
+    val logGateDecisions: Boolean,
+    val makerFeePct: Double
 ) {
     companion object {
         fun default(symbol: String): AvellanedaMmConfig {
@@ -60,7 +61,8 @@ data class AvellanedaMmConfig(
                 adaptiveSpreadTargetBps = null,
                 adaptiveSpreadUpdateMs = 10_000L,
                 quoteStyle = QuoteStyle.IMPROVE,
-                logGateDecisions = false
+                logGateDecisions = false,
+                makerFeePct = 0.0
             )
         }
     }

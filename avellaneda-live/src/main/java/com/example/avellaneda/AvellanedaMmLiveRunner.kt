@@ -162,7 +162,8 @@ object AvellanedaMmLiveRunner {
                         ?: base.adaptiveSpreadUpdateMs,
                     quoteStyle = parseQuoteStyle(System.getenv("QUOTE_STYLE")),
                     logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull()
-                        ?: base.logGateDecisions
+                        ?: base.logGateDecisions,
+                    makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: base.makerFeePct
                 )
                 if (System.getenv("LOG_CONFIG")?.toBooleanStrictOrNull() == true) {
                     println("config[$symbol]=$cfg")

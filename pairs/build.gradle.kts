@@ -4,7 +4,7 @@ plugins {
 }
 
 application {
-    mainClass.set("com.example.ofi.kukanov.OfiBacktestRunner")
+    mainClass.set("com.example.pairs.PairsBacktestRunner")
 }
 
 dependencies {
@@ -24,14 +24,21 @@ dependencies {
 
 tasks.register<JavaExec>("runLive") {
     group = "application"
-    description = "Run OFI live paper runner"
+    description = "Run pairs live paper runner"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.example.ofi.kukanov.OfiLiveRunner")
+    mainClass.set("com.example.pairs.PairsLiveRunner")
 }
 
 tasks.register<JavaExec>("runTestnet") {
     group = "application"
-    description = "Run OFI live testnet execution (futures)"
+    description = "Run pairs testnet runner"
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("com.example.ofi.kukanov.OfiTestnetRunner")
+    mainClass.set("com.example.pairs.PairsTestnetRunner")
+}
+
+tasks.register<JavaExec>("runBacktest") {
+    group = "application"
+    description = "Run pairs backtest runner"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.example.pairs.PairsBacktestRunner")
 }

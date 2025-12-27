@@ -10,6 +10,7 @@ import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimExecutionGateway
 import com.example.marketdata.impl.replay.MarketStateReplayer
 import com.example.avellaneda.metrics.AdverseSelectionTracker
+import com.example.avellaneda.metrics.FillStats
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
@@ -21,9 +22,14 @@ object AvellanedaMmBacktestRunner {
             ?: defaultMarketStatePath()
         val symbolArg = args.getOrNull(1)
         val symbolsEnv = System.getenv("SYMBOLS")
+        val fastMode = System.getenv("FAST_MODE")?.toBooleanStrictOrNull() ?: false
         val speedup = args.getOrNull(2)?.toDoubleOrNull()
             ?: System.getenv("REPLAY_SPEEDUP")?.toDoubleOrNull()
-            ?: 1.0
+            ?: if (fastMode) 50.0 else 1.0
+        val logEveryMs = System.getenv("LOG_PNL_EVERY_MS")?.toLongOrNull()
+            ?: if (fastMode) 300_000L else 60_000L
+        val tickLogEvery = System.getenv("LOG_EVERY_TICKS")?.toLongOrNull()
+            ?: if (fastMode) 10_000L else 1_000L
 
         val inputFile = File(inputPath)
         println("Backtest input: ${inputFile.absolutePath}")
@@ -66,7 +72,7 @@ object AvellanedaMmBacktestRunner {
                 fill.fillTimeMs
             )
         }
-        val symbols = resolveSymbols(inputPath, symbolArg, symbolsEnv)
+        val symbols = resolveSymbols(inputPath, symbolArg, symbolsEnv, fastMode)
         val strategies = symbols.associateWith { symbol ->
             val base = AvellanedaMmConfig.default(symbol)
             val config = base.copy(
@@ -97,7 +103,8 @@ object AvellanedaMmBacktestRunner {
                 adaptiveSpreadUpdateMs = System.getenv("ADAPTIVE_SPREAD_UPDATE_MS")?.toLongOrNull()
                     ?: base.adaptiveSpreadUpdateMs,
                 quoteStyle = parseQuoteStyle(System.getenv("QUOTE_STYLE")),
-                logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull() ?: base.logGateDecisions
+                logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull() ?: base.logGateDecisions,
+                makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: base.makerFeePct
             )
             if (System.getenv("LOG_CONFIG")?.toBooleanStrictOrNull() == true) {
                 println("config[$symbol]=$config")
@@ -122,13 +129,22 @@ object AvellanedaMmBacktestRunner {
             adverseTracker.onMarketState(state)
             val now = state.eventTimeMs ?: state.timestampMs
             if (lastPnlLog == 0L) lastPnlLog = now
-            if (now - lastPnlLog >= 60_000L) {
+            if (now - lastPnlLog >= logEveryMs) {
                 logPnlSummary(inventoryRepo)
-                logHealthSummary(inventoryRepo, accountRepo, lastFillTotal, lastPnlLog, now, adverseTracker)
+                val fillStats = computeFillStats(accountRepo.allFills(), makerFeePct)
+                logHealthSummary(
+                    inventoryRepo,
+                    accountRepo,
+                    lastFillTotal,
+                    lastPnlLog,
+                    now,
+                    adverseTracker,
+                    fillStats
+                )
                 lastFillTotal = accountRepo.totalFills()
                 lastPnlLog = now
             }
-            if (ticks % 1000L == 0L) {
+            if (ticks % tickLogEvery == 0L) {
                 println("ticks=$ticks last=${state.symbol} t=${state.timestampMs}")
             }
         }
@@ -151,12 +167,18 @@ object AvellanedaMmBacktestRunner {
         }
     }
 
-    private fun resolveSymbols(inputPath: String, symbolArg: String?, symbolsEnv: String?): List<String> {
+    private fun resolveSymbols(
+        inputPath: String,
+        symbolArg: String?,
+        symbolsEnv: String?,
+        fastMode: Boolean
+    ): List<String> {
         val raw = symbolArg?.ifBlank { null } ?: symbolsEnv?.ifBlank { null }
         if (raw != null) {
             return raw.split(',').map { it.trim().uppercase() }.filter { it.isNotBlank() }
         }
-        return loadSymbolsFromFile(File(inputPath))
+        val symbols = loadSymbolsFromFile(File(inputPath))
+        return if (fastMode) symbols.take(1) else symbols
     }
 
     private fun loadSymbolsFromFile(file: File): List<String> {
@@ -253,7 +275,8 @@ object AvellanedaMmBacktestRunner {
         lastFillTotal: Int,
         lastLogMs: Long,
         nowMs: Long,
-        adverseTracker: AdverseSelectionTracker
+        adverseTracker: AdverseSelectionTracker,
+        fillStats: FillStats
     ) {
         val elapsedSec = ((nowMs - lastLogMs).coerceAtLeast(1L)) / 1000.0
         val totalFills = accountRepo.totalFills()
@@ -279,6 +302,16 @@ object AvellanedaMmBacktestRunner {
                 sumAbsQty
             )
         )
+        println(
+            String.format(
+                "fills: total=%d maker=%d taker=%d notional=%.4f fees=%.4f",
+                fillStats.makerCount + fillStats.takerCount,
+                fillStats.makerCount,
+                fillStats.takerCount,
+                fillStats.totalNotional,
+                fillStats.totalFees
+            )
+        )
         println("adv: $advStr")
     }
 
@@ -288,5 +321,17 @@ object AvellanedaMmBacktestRunner {
             "WIDEN" -> QuoteStyle.WIDEN
             else -> QuoteStyle.JOIN
         }
+    }
+
+    private fun computeFillStats(
+        fills: List<com.example.account.domain.Fill>,
+        makerFeePct: Double
+    ): FillStats {
+        val stats = FillStats()
+        fills.forEach { fill ->
+            val notional = fill.price.value.toDouble() * fill.quantity.value.toDouble()
+            stats.record(notional, makerFeePct, 0.0, isMaker = true)
+        }
+        return stats
     }
 }

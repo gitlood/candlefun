@@ -21,6 +21,13 @@ object MarketStateRecorderRunner {
     fun main(args: Array<String>) = runBlocking {
         val outputPath = System.getenv("MARKETSTATE_RECORD_PATH")
             ?: MarketStateRecorderConfig.default().outputPath
+        val outputFile = File(outputPath)
+        val parentDir = outputFile.parentFile
+        if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs()) {
+            println("Output directory does not exist and could not be created: ${parentDir.absolutePath}")
+            println("Set MARKETSTATE_RECORD_PATH to a writable path.")
+            return@runBlocking
+        }
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "SPOT").uppercase()
         val symbolsEnv = System.getenv("SYMBOLS")
         val topN = System.getenv("TOP_N")?.toIntOrNull() ?: 50
@@ -60,7 +67,7 @@ object MarketStateRecorderRunner {
                 snapshotDepthLimit = snapshotDepth
             )
 
-            val recorder = MarketStateRecorder(File(outputPath))
+            val recorder = MarketStateRecorder(outputFile)
             if (source == "FUTURES") {
                 val repo = koin.get<FuturesMarketStateRepository>()
                 recorder.startFutures(repo, symbols, config)

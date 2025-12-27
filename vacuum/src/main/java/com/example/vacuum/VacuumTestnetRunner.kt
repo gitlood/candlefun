@@ -1,0 +1,379 @@
+package com.example.vacuum
+
+import com.example.account.domain.Price
+import com.example.account.domain.Qty
+import com.example.account.domain.Symbol
+import com.example.account.domain.inventory.InventoryFill
+import com.example.account.impl.config.InventoryWalletConfig
+import com.example.account.impl.inventory.CsvInventoryStateRepository
+import com.example.account.impl.inventory.CsvWalletStore
+import com.example.account.domain.AccountStateRepository
+import com.example.account.domain.Money
+import com.example.execution.domain.ExecutionGateway
+import com.example.execution.impl.FillRecord
+import com.example.marketdata.model.MarketStateConfig
+import com.example.marketdata.model.asSymbol
+import com.example.marketdata.repository.FuturesMarketStateRepository
+import com.example.network.di.networkModule
+import com.example.network.futures.di.futuresModule
+import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
+import com.example.platform.model.MarketState
+import com.example.platform.model.enums.OrderSide
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import org.koin.core.context.startKoin
+import org.koin.core.context.stopKoin
+import org.koin.core.qualifier.named
+import kotlin.time.Duration.Companion.milliseconds
+import com.example.account.impl.di.accountImplModule
+import com.example.execution.impl.di.executionImplModule
+import java.io.File
+import java.math.BigDecimal
+
+object VacuumTestnetRunner {
+    @JvmStatic
+    fun main(args: Array<String>) = runBlocking {
+        val symbolsEnv = System.getenv("SYMBOLS")
+        val tickMs = System.getenv("TICK_MS")?.toLongOrNull() ?: 250L
+        val depthLevels = System.getenv("DEPTH_LEVELS")?.toIntOrNull() ?: 10
+        val depthSpeedMs = System.getenv("DEPTH_SPEED_MS")?.toLongOrNull() ?: 250L
+        val snapshotDepth = System.getenv("SNAPSHOT_DEPTH")?.toIntOrNull() ?: 100
+        val logEvery = System.getenv("LOG_EVERY_TICKS")?.toLongOrNull() ?: 1_000L
+        val kpiEveryMs = System.getenv("LOG_KPI_EVERY_MS")?.toLongOrNull() ?: 60_000L
+        val leverage = System.getenv("LEVERAGE")?.toIntOrNull() ?: 1
+        val fillsPollMs = System.getenv("FILLS_POLL_MS")?.toLongOrNull() ?: 2_000L
+        val logPnlEveryMs = System.getenv("LOG_PNL_EVERY_MS")?.toLongOrNull() ?: 60_000L
+
+        val symbols = resolveSymbols(symbolsEnv)
+        println("Vacuum testnet starting...")
+        println("Symbols      : ${symbols.joinToString(", ")}")
+        println("TickMs       : $tickMs")
+        println("DepthLevels  : $depthLevels")
+        println("DepthSpeedMs : $depthSpeedMs")
+        println("SnapDepth    : $snapshotDepth")
+        println("Leverage     : $leverage")
+        println("FillsPollMs  : $fillsPollMs")
+        println("PnlEveryMs   : $logPnlEveryMs")
+
+        val koinApp = startKoin {
+            modules(networkModule, futuresModule, accountImplModule, executionImplModule)
+        }
+        val koin = koinApp.koin
+
+        try {
+            val api = koin.get<BinanceFuturesTestNetApiService>(named("futuresTestnetApi"))
+            for (symbol in symbols) {
+                try {
+                    api.setLeverage(symbol, leverage)
+                } catch (e: Exception) {
+                    println("Leverage set failed for $symbol: ${e.message}")
+                }
+            }
+
+            val repo = koin.get<FuturesMarketStateRepository>()
+            val gateway = koin.get<ExecutionGateway>(named("futuresExecution"))
+            val accountRepo = koin.get<AccountStateRepository>(named("futuresAccount"))
+            val walletConfig = InventoryWalletConfig.default().let { cfg ->
+                val autoPersist = System.getenv("WALLET_AUTOPERSIST")?.toBooleanStrictOrNull()
+                if (autoPersist == null) cfg else cfg.copy(autoPersist = autoPersist)
+            }
+            if (System.getenv("RESET_WALLET")?.toBooleanStrictOrNull() == true) {
+                File(walletConfig.walletCsvPath).delete()
+            }
+            val inventoryRepo = CsvInventoryStateRepository(
+                CsvWalletStore(walletConfig.walletCsvPath),
+                walletConfig
+            )
+            try {
+                accountRepo.getBalances()
+                println("Testnet preflight OK: account access verified.")
+            } catch (e: Exception) {
+                println("Testnet preflight failed: ${e.message}")
+                println("Check BINANCE_TESTNET_API_KEY/SECRET and permissions.")
+                return@runBlocking
+            }
+
+            val config = MarketStateConfig(
+                tick = tickMs.milliseconds,
+                depthLevels = depthLevels,
+                depthSpeed = depthSpeedMs.milliseconds,
+                snapshotDepthLimit = snapshotDepth
+            )
+
+            val kpiBySymbol = symbols.associateWith { VacuumKpiTracker(configFromEnv(it)) }
+            val strategies = symbols.associateWith { symbol ->
+                val kpi = kpiBySymbol[symbol] ?: error("KPI missing for $symbol")
+                VacuumStrategy(gateway, configFromEnv(symbol), kpi)
+            }
+
+            val fillCounts = symbols.associateWith { 0 }.toMutableMap()
+            val lastFillTime = symbols.associateWith { 0L }.toMutableMap()
+            launch {
+                while (true) {
+                    pollFillsFutures(
+                        symbols = symbols,
+                        api = api,
+                        inventoryRepo = inventoryRepo,
+                        fillCounts = fillCounts,
+                        lastFillTime = lastFillTime,
+                        makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0002,
+                        takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0004,
+                        kpiBySymbol = kpiBySymbol
+                    )
+                    delay(fillsPollMs)
+                }
+            }
+
+            var ticks = 0L
+            var lastKpiMs = 0L
+            var lastPnlMs = 0L
+            var lastFillTotal = 0
+            val symbolList = symbols.map { it.asSymbol() }
+            val flow: Flow<MarketState> = repo.streamMarketState(symbolList, config)
+            flow.collect { state ->
+                strategies[state.symbol]?.onMarketState(state)
+                kpiBySymbol[state.symbol]?.onMarketState(
+                    state.symbol,
+                    state.midPrice ?: state.microPrice,
+                    state.timestampMs
+                )
+                inventoryRepo.applyMarkPrice(
+                    Symbol.of(state.symbol),
+                    Price.fromDouble(state.midPrice ?: state.lastTradePrice ?: return@collect),
+                    state.eventTimeMs ?: state.timestampMs
+                )
+                ticks++
+                val now = state.eventTimeMs ?: state.timestampMs
+                if (ticks % logEvery == 0L) {
+                    println("ticks=$ticks last=${state.symbol} t=${state.timestampMs}")
+                }
+                if (lastKpiMs == 0L) lastKpiMs = now
+                if (now - lastKpiMs >= kpiEveryMs) {
+                    kpiBySymbol.forEach { (symbol, kpi) ->
+                        VacuumReport.print(kpi.summary(), "VACUUM TESTNET KPI $symbol")
+                    }
+                    lastKpiMs = now
+                }
+                if (lastPnlMs == 0L) lastPnlMs = now
+                if (now - lastPnlMs >= logPnlEveryMs) {
+                    logPnlSummary(inventoryRepo, symbols.toSet())
+                    logHealthSummary(
+                        inventoryRepo,
+                        symbols.toSet(),
+                        fillCounts,
+                        lastFillTotal,
+                        lastPnlMs,
+                        now
+                    )
+                    lastFillTotal = fillCounts.values.sum()
+                    lastPnlMs = now
+                }
+            }
+        } finally {
+            stopKoin()
+        }
+    }
+
+    private fun resolveSymbols(raw: String?): List<String> {
+        val env = raw?.ifBlank { null }
+        if (env != null) {
+            return env.split(',').map { it.trim().uppercase() }.filter { it.isNotBlank() }
+        }
+        return listOf("BTCUSDT")
+    }
+
+    private fun configFromEnv(symbol: String): VacuumConfig {
+        val base = VacuumConfig(symbol = symbol)
+        return base.copy(
+            depthLevels = System.getenv("DEPTH_LEVELS")?.toIntOrNull() ?: base.depthLevels,
+            depthWindowMs = System.getenv("DEPTH_WINDOW_MS")?.toLongOrNull() ?: base.depthWindowMs,
+            depthDropPct = System.getenv("DEPTH_DROP_PCT")?.toDoubleOrNull() ?: base.depthDropPct,
+            depthRefillPct = System.getenv("DEPTH_REFILL_PCT")?.toDoubleOrNull() ?: base.depthRefillPct,
+            spreadWindowMs = System.getenv("SPREAD_WINDOW_MS")?.toLongOrNull() ?: base.spreadWindowMs,
+            spreadWidenPct = System.getenv("SPREAD_WIDEN_PCT")?.toDoubleOrNull() ?: base.spreadWidenPct,
+            maxSpreadPct = System.getenv("MAX_SPREAD_PCT")?.toDoubleOrNull() ?: base.maxSpreadPct,
+            minTradeCount1s = System.getenv("MIN_TRADE_COUNT_1S")?.toIntOrNull() ?: base.minTradeCount1s,
+            minTradeImbalance1s = System.getenv("MIN_TRADE_IMB_1S")?.toDoubleOrNull()
+                ?: base.minTradeImbalance1s,
+            orderQty = System.getenv("ORDER_QTY")?.toDoubleOrNull() ?: base.orderQty,
+            priceTick = System.getenv("PRICE_TICK")?.toDoubleOrNull() ?: base.priceTick,
+            qtyStep = System.getenv("QTY_STEP")?.toDoubleOrNull() ?: base.qtyStep,
+            entryCooldownMs = System.getenv("ENTRY_COOLDOWN_MS")?.toLongOrNull() ?: base.entryCooldownMs,
+            orderTtlMs = System.getenv("ORDER_TTL_MS")?.toLongOrNull() ?: base.orderTtlMs,
+            maxHoldMs = System.getenv("MAX_HOLD_MS")?.toLongOrNull() ?: base.maxHoldMs,
+            trailingStopBps = System.getenv("TRAILING_STOP_BPS")?.toDoubleOrNull()
+                ?: base.trailingStopBps,
+            slippagePauseBps = System.getenv("SLIPPAGE_PAUSE_BPS")?.toDoubleOrNull()
+                ?: base.slippagePauseBps,
+            tailLossBps = System.getenv("TAIL_LOSS_BPS")?.toDoubleOrNull() ?: base.tailLossBps,
+            maxTailLosses = System.getenv("MAX_TAIL_LOSSES")?.toIntOrNull() ?: base.maxTailLosses,
+            pauseMs = System.getenv("PAUSE_MS")?.toLongOrNull() ?: base.pauseMs,
+            logSignals = System.getenv("LOG_SIGNALS")?.toBooleanStrictOrNull() ?: base.logSignals
+        )
+    }
+
+    private suspend fun pollFillsFutures(
+        symbols: List<String>,
+        api: BinanceFuturesTestNetApiService,
+        inventoryRepo: CsvInventoryStateRepository,
+        fillCounts: MutableMap<String, Int>,
+        lastFillTime: MutableMap<String, Long>,
+        makerFeePct: Double,
+        takerFeePct: Double,
+        kpiBySymbol: Map<String, VacuumKpiTracker>
+    ) {
+        for (symbol in symbols) {
+            try {
+                val startTime = lastFillTime[symbol]?.plus(1)
+                val trades = api.getUserTrades(symbol, startTime = startTime)
+                val prevTotal = fillCounts[symbol] ?: 0
+                if (trades.isNotEmpty()) {
+                    val newTotal = prevTotal + trades.size
+                    val last = trades.lastOrNull()
+                    println("fillsTotal=$newTotal lastFill=${last?.symbol} price=${last?.price}")
+                    fillCounts[symbol] = newTotal
+                }
+                trades.forEach { t ->
+                    val feeRate = if (t.maker) makerFeePct else takerFeePct
+                    val fee = if (feeRate > 0.0) {
+                        Money.fromString(t.quoteQty).let {
+                            Money(it.value.multiply(BigDecimal.valueOf(feeRate)))
+                        }
+                    } else {
+                        Money.ZERO
+                    }
+                    val side = if (t.buyer) OrderSide.BUY else OrderSide.SELL
+                    val signedQty = if (t.buyer) {
+                        Qty.fromString(t.quantity)
+                    } else {
+                        -Qty.fromString(t.quantity)
+                    }
+                    inventoryRepo.applyFill(
+                        InventoryFill(
+                            symbol = Symbol.of(t.symbol),
+                            signedQty = signedQty,
+                            price = Price.fromString(t.price),
+                            timestampMs = t.time,
+                            fee = fee
+                        )
+                    )
+                    val kpi = kpiBySymbol[symbol]
+                    if (kpi != null) {
+                        val fill = FillRecord(
+                            orderId = t.orderId,
+                            symbol = Symbol.of(symbol),
+                            side = side,
+                            price = Price.fromString(t.price),
+                            quantity = Qty.fromString(t.quantity),
+                            fillTimeMs = t.time
+                        )
+                        kpi.onFill(fill)
+                    }
+                }
+                val maxTime = trades.maxOfOrNull { it.time }
+                if (maxTime != null) lastFillTime[symbol] = maxTime
+            } catch (_: Exception) {
+                // Ignore invalid symbol or permission errors during polling.
+            }
+        }
+    }
+
+    private suspend fun logPnlSummary(
+        inventoryRepo: CsvInventoryStateRepository,
+        allowedSymbols: Set<String>
+    ) {
+        val positions = inventoryRepo.getInventory().filter { allowedSymbols.contains(it.symbol.value) }
+        if (positions.isEmpty()) {
+            println("pnl: no positions")
+            return
+        }
+        val header = String.format(
+            "%-10s %12s %12s %12s %12s %12s %8s",
+            "SYMBOL",
+            "QTY",
+            "AVG",
+            "UNR_PNL",
+            "REAL_PNL",
+            "PNL",
+            "PNL%"
+        )
+        val line = "-".repeat(header.length)
+        println(line)
+        println(header)
+        println(line)
+
+        var totalExposure = 0.0
+        var totalRealized = 0.0
+        var totalUnrealized = 0.0
+
+        positions.sortedBy { it.symbol.value }.forEach { p ->
+            val qty = p.quantity.value.toDouble()
+            val avg = p.avgPrice.value.toDouble()
+            val unrealized = p.unrealizedPnl.value.toDouble()
+            val realized = p.realizedPnl.value.toDouble()
+            val pnl = realized + unrealized
+            val exposure = kotlin.math.abs(qty * avg)
+            totalExposure += exposure
+            totalRealized += realized
+            totalUnrealized += unrealized
+            val pnlPct = if (exposure > 0.0) pnl / exposure * 100.0 else 0.0
+            println(
+                String.format(
+                    "%-10s %12.6f %12.6f %12.4f %12.4f %12.4f %7.2f%%",
+                    p.symbol.value,
+                    qty,
+                    avg,
+                    unrealized,
+                    realized,
+                    pnl,
+                    pnlPct
+                )
+            )
+        }
+
+        val totalPnl = totalRealized + totalUnrealized
+        val totalPct = if (totalExposure > 0.0) totalPnl / totalExposure * 100.0 else 0.0
+        println(line)
+        println(
+            String.format(
+                "%-10s %12s %12s %12.4f %12.4f %12.4f %7.2f%%",
+                "TOTAL",
+                "",
+                "",
+                totalUnrealized,
+                totalRealized,
+                totalPnl,
+                totalPct
+            )
+        )
+        println(line)
+    }
+
+    private suspend fun logHealthSummary(
+        inventoryRepo: CsvInventoryStateRepository,
+        allowedSymbols: Set<String>,
+        fillCounts: Map<String, Int>,
+        lastFillTotal: Int,
+        lastLogMs: Long,
+        nowMs: Long
+    ) {
+        val elapsedSec = ((nowMs - lastLogMs).coerceAtLeast(1L)) / 1000.0
+        val totalFills = fillCounts.values.sum()
+        val fillsPerMin = (totalFills - lastFillTotal) * (60.0 / elapsedSec)
+        val positions = inventoryRepo.getInventory().filter { allowedSymbols.contains(it.symbol.value) }
+        val maxAbsQty =
+            positions.maxOfOrNull { kotlin.math.abs(it.quantity.value.toDouble()) } ?: 0.0
+        val sumAbsQty = positions.sumOf { kotlin.math.abs(it.quantity.value.toDouble()) }
+        println(
+            String.format(
+                "health: fillsPerMin=%.2f positions=%d maxAbsQty=%.6f sumAbsQty=%.6f",
+                fillsPerMin,
+                positions.size,
+                maxAbsQty,
+                sumAbsQty
+            )
+        )
+    }
+}

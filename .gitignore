@@ -31,3 +31,5 @@ app/orderbookscalper/*.csv
 /marketstate.csv
 /avellaneda_live_dump.txt
 /avellaneda_mm_dump.txt
+/ofi_kukanov_dump.txt
+/survivor.csv

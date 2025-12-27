@@ -16,6 +16,12 @@ Live (paper) runner:
 ./gradlew :ofi-kukanov:runLive
 ```
 
+Live (testnet execution, futures only):
+
+```
+./gradlew :ofi-kukanov:runTestnet
+```
+
 ## Key env vars
 
 Signal:
