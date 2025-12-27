@@ -47,6 +47,15 @@ Key fields:
 - `avgSlippageBps`, `avgAdverseMoveBps`
 - `tailLossCount`, `lastSlippageBps`
 - `cancelRate`, `staleCancelRate`
+- `health_summary` line (standard cross-strategy format)
+
+## Manifest Logging (JSONL)
+
+- `MANIFEST_ENABLED` (default `true`)
+- `MANIFEST_PATH` (file override)
+- `MANIFEST_TIMESTAMPED` (default `false`)
+- `REPORT_DIR` (directory override)
+- `RUN_ID`, `RUN_NOTES`
 
 ## How To Interpret The Report (AI Notes)
 

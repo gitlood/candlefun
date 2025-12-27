@@ -21,9 +21,18 @@ Default paths:
 Env knobs:
 - `REPORT_ENABLED` (default `true`)
 - `REPORT_EVERY_MS` (default `60000`)
+- `REPORT_TRUNCATE` (default `true`)
+- `REPORT_TIMESTAMPED` (default `false`)
 - `REPORT_DIR` (directory override)
 - `REPORT_PATH` (file override)
 - `AVELLANEDA_REPORT_PATH` (Avellaneda-specific file override)
+
+Manifest logging (JSONL):
+- `MANIFEST_ENABLED` (default `true`)
+- `MANIFEST_PATH` (file override)
+- `MANIFEST_TIMESTAMPED` (default `false`)
+- `REPORT_DIR` (directory override)
+- `RUN_ID`, `RUN_NOTES`
 
 Columns (per row):
 `ts_ms,mode,symbol,mid,qty,avg,unrealized_pnl,realized_pnl,net_pnl,pnl_pct,exposure,fills,maker_fills,taker_fills,total_fees,total_notional,adv_1s_bps,adv_5s_bps`

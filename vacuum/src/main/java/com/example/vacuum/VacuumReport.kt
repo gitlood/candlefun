@@ -1,5 +1,6 @@
 package com.example.vacuum
 
+import com.example.platform.report.HealthSummary
 import java.util.Locale
 
 object VacuumReport {
@@ -15,6 +16,7 @@ object VacuumReport {
         val cancelRate = summary.cancelRate?.let { "%.2f%%".format(Locale.US, it * 100.0) } ?: "NA"
         val staleRate = summary.staleCancelRate?.let { "%.2f%%".format(Locale.US, it * 100.0) } ?: "NA"
         val lastSlip = summary.lastSlippageBps?.let { "%.2f".format(Locale.US, it) } ?: "NA"
+        val mode = inferMode(label)
 
         return buildString {
             appendLine(line)
@@ -37,6 +39,21 @@ object VacuumReport {
                     staleRate
                 )
             )
+            appendLine(
+                HealthSummary.render(
+                    strategy = "vacuum",
+                    mode = mode,
+                    net = null,
+                    fees = null,
+                    adverseBps = summary.avgAdverseMoveBps,
+                    fills = null,
+                    exposure = null,
+                    extra = mapOf(
+                        "tail_losses" to summary.tailLossCount.toString(),
+                        "avg_slip_bps" to slip
+                    )
+                )
+            )
             appendLine(line)
         }
     }
@@ -50,5 +67,15 @@ object VacuumReport {
             rightLabel,
             rightValue
         )
+    }
+
+    private fun inferMode(label: String): String {
+        val upper = label.uppercase(Locale.US)
+        return when {
+            upper.contains("TESTNET") -> "testnet"
+            upper.contains("LIVE") -> "live"
+            upper.contains("BACKTEST") -> "backtest"
+            else -> "unknown"
+        }
     }
 }

@@ -1,5 +1,6 @@
 package com.example.pairs
 
+import com.example.platform.report.HealthSummary
 import java.util.Locale
 
 object PairsReport {
@@ -11,6 +12,7 @@ object PairsReport {
         val line = "-".repeat(78)
         val header = String.format(Locale.US, "%-78s", label)
         val halfLife = summary.avgHalfLifeMs?.let { "%.1fs".format(Locale.US, it / 1000.0) } ?: "NA"
+        val mode = inferMode(label)
 
         return buildString {
             appendLine(line)
@@ -19,6 +21,21 @@ object PairsReport {
             appendLine(formatRow("NET PNL", summary.netPnL, "FEES", summary.totalFees))
             appendLine(formatRow("REALIZED", summary.realizedPnL, "TAIL EVENTS", summary.tailEvents.toDouble()))
             appendLine(String.format(Locale.US, "HALF-LIFE: %-10s", halfLife))
+            appendLine(
+                HealthSummary.render(
+                    strategy = "pairs",
+                    mode = mode,
+                    net = summary.netPnL,
+                    fees = summary.totalFees,
+                    adverseBps = null,
+                    fills = null,
+                    exposure = null,
+                    extra = mapOf(
+                        "half_life" to halfLife,
+                        "tail_events" to summary.tailEvents.toString()
+                    )
+                )
+            )
             appendLine(line)
         }
     }
@@ -32,5 +49,15 @@ object PairsReport {
             rightLabel,
             rightValue
         )
+    }
+
+    private fun inferMode(label: String): String {
+        val upper = label.uppercase(Locale.US)
+        return when {
+            upper.contains("TESTNET") -> "testnet"
+            upper.contains("LIVE") -> "live"
+            upper.contains("BACKTEST") -> "backtest"
+            else -> "unknown"
+        }
     }
 }

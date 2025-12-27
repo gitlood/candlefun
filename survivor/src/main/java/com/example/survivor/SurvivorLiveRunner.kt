@@ -1,5 +1,7 @@
 package com.example.survivor
 
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
@@ -22,6 +24,22 @@ object SurvivorLiveRunner {
         val gateway = SurvivorPaperGateway { fill -> kpi.onFill(fill) }
         val strategy = SurvivorStrategy(gateway, config, kpi, gates)
         val tailer = SurvivorCsvTailer(file, pollMs = pollMs)
+        val manifestWriter = ExperimentManifestWriter.fromEnv()
+        manifestWriter?.write(
+            ExperimentManifest(
+                timestampMs = System.currentTimeMillis(),
+                strategy = "survivor",
+                mode = "live",
+                symbols = listOf(config.symbol),
+                params = mapOf(
+                    "SURVIVOR_TAIL_CSV" to inputPath,
+                    "TAIL_POLL_MS" to pollMs.toString()
+                ).filterValues { it.isNotBlank() },
+                reportPath = null,
+                runId = System.getenv("RUN_ID"),
+                notes = System.getenv("RUN_NOTES")
+            )
+        )
 
         var lastKpiMs = 0L
         tailer.stream().collect { snap ->

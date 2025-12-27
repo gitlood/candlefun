@@ -9,6 +9,8 @@ import com.example.network.futures.di.futuresModule
 import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
 import com.example.network.futures.interfaces.FuturesMarketDataService
 import com.example.platform.model.MarketState
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -37,6 +39,8 @@ object SurvivorTestnetRunner {
         val recordEnabled = System.getenv("RECORD_SURVIVOR_CSV")?.toBooleanStrictOrNull() ?: false
         val recordEveryMs = System.getenv("RECORD_EVERY_MS")?.toLongOrNull() ?: 1_000L
         val recordPath = System.getenv("SURVIVOR_RECORD_PATH") ?: defaultRecordPath()
+        val recordTimestamped = System.getenv("RECORD_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
+        val recordTruncate = System.getenv("RECORD_TRUNCATE")?.toBooleanStrictOrNull() ?: true
         val leverage = System.getenv("LEVERAGE")?.toIntOrNull() ?: 1
 
         println("Survivor testnet starting...")
@@ -49,7 +53,8 @@ object SurvivorTestnetRunner {
         println("PosPollMs    : $positionPollMs")
         println("Leverage     : $leverage")
         if (recordEnabled) {
-            println("RecordCsv    : $recordPath everyMs=$recordEveryMs")
+            val resolved = applyTimestamp(recordPath, recordTimestamped)
+            println("RecordCsv    : $resolved everyMs=$recordEveryMs truncate=$recordTruncate")
         }
 
         val koinApp = startKoin {
@@ -81,10 +86,36 @@ object SurvivorTestnetRunner {
             val gates = SurvivorGateStats()
             val strategy = SurvivorStrategy(gateway, survivorConfig, kpi, gates)
             val recorder = if (recordEnabled) {
-                SurvivorCsvRecorder(File(recordPath), recordEveryMs)
+                val resolved = applyTimestamp(recordPath, recordTimestamped)
+                val outFile = File(resolved)
+                if (recordTruncate && outFile.exists()) {
+                    outFile.delete()
+                }
+                SurvivorCsvRecorder(outFile, recordEveryMs)
             } else {
                 null
             }
+            val manifestWriter = ExperimentManifestWriter.fromEnv()
+            manifestWriter?.write(
+                ExperimentManifest(
+                    timestampMs = System.currentTimeMillis(),
+                    strategy = "survivor",
+                    mode = "testnet",
+                    symbols = listOf(symbol),
+                    params = mapOf(
+                        "SYMBOL" to symbol,
+                        "ENTRY_FUNDING" to (System.getenv("ENTRY_FUNDING") ?: ""),
+                        "EXIT_FUNDING" to (System.getenv("EXIT_FUNDING") ?: ""),
+                        "BASIS_STOP_PCT" to (System.getenv("BASIS_STOP_PCT") ?: ""),
+                        "MAX_VOL" to (System.getenv("MAX_VOL") ?: ""),
+                        "MAX_SPREAD_PCT" to (System.getenv("MAX_SPREAD_PCT") ?: ""),
+                        "LEVERAGE" to leverage.toString()
+                    ).filterValues { it.isNotBlank() },
+                    reportPath = null,
+                    runId = System.getenv("RUN_ID"),
+                    notes = System.getenv("RUN_NOTES")
+                )
+            )
 
             val dataMutex = Mutex()
             var latestPremium: PremiumSnapshot? = null
@@ -211,5 +242,20 @@ object SurvivorTestnetRunner {
             val parent = dir.parentFile ?: return dir
             dir = parent
         }
+    }
+
+    private fun applyTimestamp(path: String, timestamped: Boolean): String {
+        if (!timestamped) return path
+        val file = File(path)
+        val name = file.name
+        val dot = name.lastIndexOf('.')
+        val base = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        val ts = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+            .withZone(java.time.ZoneOffset.UTC)
+            .format(java.time.Instant.now())
+        val stamped = "${base}_$ts$ext"
+        val parent = file.parentFile
+        return if (parent == null) stamped else File(parent, stamped).absolutePath
     }
 }

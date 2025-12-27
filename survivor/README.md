@@ -41,6 +41,7 @@ symbol,timestampMs,fundingRate,nextFundingTimeMs,markPrice,indexPrice,spreadPct,
 - `TAIL_POLL_MS`
 - `FUNDING_POLL_MS`, `POSITION_POLL_MS`
 - `RECORD_SURVIVOR_CSV`, `SURVIVOR_RECORD_PATH`, `RECORD_EVERY_MS`
+- `RECORD_TIMESTAMPED`, `RECORD_TRUNCATE`
 - `ENTRY_FUNDING`, `EXIT_FUNDING`
 - `BASIS_STOP_PCT`
 - `MAX_VOL`, `MAX_SPREAD_PCT`
@@ -59,6 +60,15 @@ Key fields:
 - `netCarry`, `realizedFunding`, `realizedFees`, `borrowCosts`
 - `expectedCarry`, `worstBasisAbsPct`
 - `cancelRate`, `staleCancelRate`
+- `health_summary` line (standard cross-strategy format)
+
+## Manifest Logging (JSONL)
+
+- `MANIFEST_ENABLED` (default `true`)
+- `MANIFEST_PATH` (file override)
+- `MANIFEST_TIMESTAMPED` (default `false`)
+- `REPORT_DIR` (directory override)
+- `RUN_ID`, `RUN_NOTES`
 
 ## How To Interpret The Report (AI Notes)
 

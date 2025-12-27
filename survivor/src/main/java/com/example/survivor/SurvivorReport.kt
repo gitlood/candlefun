@@ -1,5 +1,6 @@
 package com.example.survivor
 
+import com.example.platform.report.HealthSummary
 import java.util.Locale
 
 object SurvivorReport {
@@ -12,6 +13,7 @@ object SurvivorReport {
         val header = String.format(Locale.US, "%-78s", label)
         val cancelRate = summary.cancelRate?.let { "%.2f%%".format(Locale.US, it * 100.0) } ?: "NA"
         val staleRate = summary.staleCancelRate?.let { "%.2f%%".format(Locale.US, it * 100.0) } ?: "NA"
+        val mode = inferMode(label)
 
         return buildString {
             appendLine(line)
@@ -26,6 +28,21 @@ object SurvivorReport {
                     "CANCEL RATE: %-10s  STALE CANCEL: %-10s",
                     cancelRate,
                     staleRate
+                )
+            )
+            appendLine(
+                HealthSummary.render(
+                    strategy = "survivor",
+                    mode = mode,
+                    net = summary.netCarry,
+                    fees = summary.realizedFees + summary.borrowCosts,
+                    adverseBps = null,
+                    fills = null,
+                    exposure = null,
+                    extra = mapOf(
+                        "worst_basis_pct" to "%.4f".format(Locale.US, summary.worstBasisAbsPct),
+                        "expected_carry" to "%.4f".format(Locale.US, summary.expectedCarry)
+                    )
                 )
             )
             appendLine(line)
@@ -46,5 +63,15 @@ object SurvivorReport {
             rightLabel,
             rightValue
         )
+    }
+
+    private fun inferMode(label: String): String {
+        val upper = label.uppercase(Locale.US)
+        return when {
+            upper.contains("TESTNET") -> "testnet"
+            upper.contains("LIVE") -> "live"
+            upper.contains("BACKTEST") -> "backtest"
+            else -> "unknown"
+        }
     }
 }

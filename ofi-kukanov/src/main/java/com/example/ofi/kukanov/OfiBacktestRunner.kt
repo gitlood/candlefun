@@ -9,6 +9,9 @@ import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
 import com.example.marketdata.impl.replay.MarketStateReplayer
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.HealthSummary
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration.Companion.milliseconds
 import java.io.File
@@ -72,6 +75,26 @@ object OfiBacktestRunner {
                 kpiSink = kpiTracker
             )
         }
+        val manifestWriter = ExperimentManifestWriter.fromEnv()
+        manifestWriter?.write(
+            ExperimentManifest(
+                timestampMs = System.currentTimeMillis(),
+                strategy = "ofi-kukanov",
+                mode = "backtest",
+                symbols = symbols,
+                params = mapOf(
+                    "MARKETSTATE_CSV" to inputPath,
+                    "REPLAY_SPEEDUP" to speedup.toString(),
+                    "OFI_WINDOW_MS" to (System.getenv("OFI_WINDOW_MS") ?: ""),
+                    "OFI_ENTRY_THRESHOLD" to (System.getenv("OFI_ENTRY_THRESHOLD") ?: ""),
+                    "OFI_EXIT_THRESHOLD" to (System.getenv("OFI_EXIT_THRESHOLD") ?: ""),
+                    "ORDER_STYLE" to (System.getenv("ORDER_STYLE") ?: "")
+                ).filterValues { it.isNotBlank() },
+                reportPath = null,
+                runId = System.getenv("RUN_ID"),
+                notes = System.getenv("RUN_NOTES")
+            )
+        )
 
         var ticks = 0L
         var lastKpiLogMs = 0L
@@ -223,6 +246,21 @@ object OfiBacktestRunner {
                 "joinEdgeBps=$joinEdge takeSlipBps=$slip adverseBps=$adverse latencyMs=$latency " +
                 "trades=${summary.tradeCount} winRate=$winRate fillRate=$fillRate cancelRate=$cancelRate " +
                 "staleCancelRate=$staleRate takeRate=$takeRate"
+        )
+        println(
+            HealthSummary.render(
+                strategy = "ofi-kukanov",
+                mode = "backtest",
+                net = summary.netPnl,
+                fees = summary.totalFees,
+                adverseBps = summary.avgAdverseMoveBps,
+                fills = summary.tradeCount,
+                exposure = null,
+                extra = mapOf(
+                    "win_rate" to winRate,
+                    "fill_rate" to fillRate
+                )
+            )
         )
     }
 }

@@ -4,6 +4,8 @@ import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
 import com.example.marketdata.impl.replay.MarketStateReplayer
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
@@ -51,6 +53,24 @@ object VacuumBacktestRunner {
             fillListener = { fill -> kpi.onFill(fill) }
         )
         val strategy = VacuumStrategy(gateway, config, kpi)
+        val manifestWriter = ExperimentManifestWriter.fromEnv()
+        manifestWriter?.write(
+            ExperimentManifest(
+                timestampMs = System.currentTimeMillis(),
+                strategy = "vacuum",
+                mode = "backtest",
+                symbols = listOf(config.symbol),
+                params = mapOf(
+                    "MARKETSTATE_CSV" to inputPath,
+                    "REPLAY_SPEEDUP" to speedup.toString(),
+                    "DEPTH_DROP_PCT" to (System.getenv("DEPTH_DROP_PCT") ?: ""),
+                    "SPREAD_WIDEN_PCT" to (System.getenv("SPREAD_WIDEN_PCT") ?: "")
+                ).filterValues { it.isNotBlank() },
+                reportPath = null,
+                runId = System.getenv("RUN_ID"),
+                notes = System.getenv("RUN_NOTES")
+            )
+        )
 
         var ticks = 0L
         var lastKpiMs = 0L

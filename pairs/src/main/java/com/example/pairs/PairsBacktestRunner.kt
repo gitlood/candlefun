@@ -4,6 +4,8 @@ import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
 import com.example.marketdata.impl.replay.MarketStateReplayer
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
@@ -47,6 +49,24 @@ object PairsBacktestRunner {
             takerFeePct = takerFeePct
         )
         val strategy = PairsStrategy(gateway, config, kpi)
+        val manifestWriter = ExperimentManifestWriter.fromEnv()
+        manifestWriter?.write(
+            ExperimentManifest(
+                timestampMs = System.currentTimeMillis(),
+                strategy = "pairs",
+                mode = "backtest",
+                symbols = listOf(symbolA, symbolB),
+                params = mapOf(
+                    "MARKETSTATE_CSV" to inputPath,
+                    "REPLAY_SPEEDUP" to speedup.toString(),
+                    "ENTRY_Z" to (System.getenv("ENTRY_Z") ?: ""),
+                    "EXIT_Z" to (System.getenv("EXIT_Z") ?: "")
+                ).filterValues { it.isNotBlank() },
+                reportPath = null,
+                runId = System.getenv("RUN_ID"),
+                notes = System.getenv("RUN_NOTES")
+            )
+        )
 
         var lastKpiMs = 0L
         replayer.stream().collect { state ->

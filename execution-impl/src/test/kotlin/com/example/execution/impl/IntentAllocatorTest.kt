@@ -24,9 +24,9 @@ class IntentAllocatorTest {
         val (net, routed) = allocator.allocate(intents)
 
         assertEquals(1, net.size)
-        assertEquals(Qty.fromDouble(0.6), net.first().netDelta)
+        assertEquals(0.6, net.first().netDelta.value.toDouble(), 1e-9)
         assertEquals(1, routed.size)
-        assertEquals(Qty.fromDouble(0.6), routed.first().netDelta)
+        assertEquals(0.6, routed.first().netDelta.value.toDouble(), 1e-9)
     }
 
     @Test
@@ -57,7 +57,7 @@ class IntentAllocatorTest {
 
         assertEquals(1, routed.size)
         // Risk cap forces normalization down to total cap sum (2+8=10), so net delta unchanged.
-        assertEquals(Qty.fromDouble(10.0), routed.first().netDelta)
+        assertEquals(10.0, routed.first().netDelta.value.toDouble(), 1e-9)
     }
 
     @Test
@@ -73,7 +73,8 @@ class IntentAllocatorTest {
 
         assertEquals(1, routed.size)
         // Only part of the notional survives after weighting (1^2=1, 0.25^2=0.0625).
-        assertEquals(Qty.fromDouble(2.3333333333), routed.first().netDelta)
+        val expected = 8.0 * (4.0 / 4.25)
+        assertEquals(expected, routed.first().netDelta.value.toDouble(), 1e-9)
     }
 
     @Test
@@ -86,7 +87,7 @@ class IntentAllocatorTest {
         val allocator = IntentAllocator(riskBudget = RiskBudget(total = 100.0))
         val (net, routed) = allocator.allocate(intents)
 
-        assertEquals(Qty.ZERO, net.first().netDelta)
+        assertEquals(0.0, net.first().netDelta.value.toDouble(), 1e-9)
         assertTrue(routed.isEmpty())
     }
 }

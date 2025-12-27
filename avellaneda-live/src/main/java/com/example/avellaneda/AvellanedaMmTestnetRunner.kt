@@ -12,6 +12,9 @@ import com.example.avellaneda.metrics.AdverseSelectionTracker
 import com.example.avellaneda.metrics.FillStats
 import com.example.avellaneda.report.AvellanedaCsvReporter
 import com.example.avellaneda.report.AvellanedaReportRow
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.HealthSummary
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.impl.EnvExecutionCredentialsProvider
 import com.example.execution.impl.di.executionImplModule
@@ -190,6 +193,7 @@ object AvellanedaMmTestnetRunner {
                 println("ReportPath   : ${reporter.reportPath()}")
                 println("ReportEveryMs: $reportEveryMs")
             }
+            val manifestWriter = ExperimentManifestWriter.fromEnv()
             val adverseProvider: (String) -> Double? = { symbol ->
                 val adv = adverseTracker.snapshotBps(symbol)
                 adv.getOrNull(1) ?: adv.lastOrNull()
@@ -259,6 +263,30 @@ object AvellanedaMmTestnetRunner {
                 }
                 AvellanedaMmStrategy(gateway, cfg, adverseProvider)
             }
+            manifestWriter?.write(
+                ExperimentManifest(
+                    timestampMs = System.currentTimeMillis(),
+                    strategy = "avellaneda",
+                    mode = "testnet",
+                    symbols = liveSymbols,
+                    params = mapOf(
+                        "MARKETDATA_SOURCE" to source,
+                        "QUOTE_STYLE" to parseQuoteStyle(System.getenv("QUOTE_STYLE")).name,
+                        "ORDER_QTY" to (System.getenv("ORDER_QTY") ?: ""),
+                        "MAX_INVENTORY" to (System.getenv("MAX_INVENTORY") ?: ""),
+                        "MIN_AVG_SPREAD_PCT" to (System.getenv("MIN_AVG_SPREAD_PCT") ?: ""),
+                        "MAX_AVG_SPREAD_PCT" to (System.getenv("MAX_AVG_SPREAD_PCT") ?: ""),
+                        "ADAPTIVE_SPREAD_TARGET_BPS" to (System.getenv("ADAPTIVE_SPREAD_TARGET_BPS") ?: ""),
+                        "ADAPTIVE_SPREAD_UPDATE_MS" to (System.getenv("ADAPTIVE_SPREAD_UPDATE_MS") ?: ""),
+                        "MAKER_FEE_PCT" to makerFeePct.toString(),
+                        "TAKER_FEE_PCT" to takerFeePct.toString(),
+                        "LEVERAGE" to (System.getenv("LEVERAGE") ?: "")
+                    ).filterValues { it.isNotBlank() },
+                    reportPath = reporter?.reportPath(),
+                    runId = System.getenv("RUN_ID"),
+                    notes = System.getenv("RUN_NOTES")
+                )
+            )
 
             println("Testnet execution running. Press Ctrl+C to stop.")
             var ticks = 0L
@@ -609,6 +637,21 @@ object AvellanedaMmTestnetRunner {
             )
         )
         println("adv: $advStr")
+        val totalNet = positions.sumOf { it.realizedPnl.value.toDouble() + it.unrealizedPnl.value.toDouble() }
+        val totalExposure = positions.sumOf { abs(it.quantity.value.toDouble() * it.avgPrice.value.toDouble()) }
+        val avgAdv = positions.mapNotNull { adverseTracker.snapshotBps(it.symbol.value).firstOrNull() }
+            .let { if (it.isEmpty()) null else it.average() }
+        println(
+            HealthSummary.render(
+                strategy = "avellaneda",
+                mode = "testnet",
+                net = totalNet,
+                fees = fillStats.totalFees,
+                adverseBps = avgAdv,
+                fills = fillStats.totalCount(),
+                exposure = totalExposure
+            )
+        )
     }
 
     private suspend fun resolveSymbols(

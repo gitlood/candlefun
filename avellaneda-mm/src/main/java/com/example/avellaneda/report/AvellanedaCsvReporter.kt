@@ -116,23 +116,37 @@ class AvellanedaCsvReporter private constructor(
         fun fromEnv(mode: String, advLabels: List<String>): AvellanedaCsvReporter? {
             val enabled = System.getenv("REPORT_ENABLED")?.toBooleanStrictOrNull() ?: true
             if (!enabled) return null
+            val truncate = System.getenv("REPORT_TRUNCATE")?.toBooleanStrictOrNull() ?: true
+            val timestamped = System.getenv("REPORT_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
             val path = System.getenv("AVELLANEDA_REPORT_PATH")
                 ?: System.getenv("REPORT_PATH")
                 ?: run {
                     val dir = System.getenv("REPORT_DIR")
                     if (!dir.isNullOrBlank()) {
-                        File(dir, "avellaneda_${mode}.csv").absolutePath
+                        File(dir, reportFileName(mode, timestamped)).absolutePath
                     } else {
-                        defaultReportPath(mode)
+                        defaultReportPath(mode, timestamped)
                     }
                 }
-            return AvellanedaCsvReporter(File(path), mode, advLabels)
+            val file = File(path)
+            if (truncate && file.exists()) {
+                file.delete()
+            }
+            return AvellanedaCsvReporter(file, mode, advLabels)
         }
 
-        private fun defaultReportPath(mode: String): String {
+        private fun defaultReportPath(mode: String, timestamped: Boolean): String {
             val root = findProjectRoot()
             val dir = File(root, "reports/avellaneda")
-            return File(dir, "avellaneda_${mode}.csv").absolutePath
+            return File(dir, reportFileName(mode, timestamped)).absolutePath
+        }
+
+        private fun reportFileName(mode: String, timestamped: Boolean): String {
+            if (!timestamped) return "avellaneda_${mode}.csv"
+            val ts = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+                .withZone(java.time.ZoneOffset.UTC)
+                .format(java.time.Instant.now())
+            return "avellaneda_${mode}_$ts.csv"
         }
 
         private fun findProjectRoot(): File {

@@ -7,6 +7,8 @@ import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
 import com.example.network.futures.interfaces.FuturesMarketDataService
 import com.example.platform.model.MarketState
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import java.io.File
 import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
@@ -47,6 +49,25 @@ object SurvivorBacktestRunner {
         val gateway = SurvivorPaperGateway { fill -> kpi.onFill(fill) }
         val strategy = SurvivorStrategy(gateway, config, kpi, gates)
         val replayer = SurvivorCsvReplayer(file, speedup = speedup)
+        val manifestWriter = ExperimentManifestWriter.fromEnv()
+        manifestWriter?.write(
+            ExperimentManifest(
+                timestampMs = System.currentTimeMillis(),
+                strategy = "survivor",
+                mode = "backtest",
+                symbols = listOf(config.symbol),
+                params = mapOf(
+                    "SURVIVOR_CSV" to inputPath,
+                    "REPLAY_SPEEDUP" to speedup.toString(),
+                    "ENTRY_FUNDING" to (System.getenv("ENTRY_FUNDING") ?: ""),
+                    "EXIT_FUNDING" to (System.getenv("EXIT_FUNDING") ?: ""),
+                    "BASIS_STOP_PCT" to (System.getenv("BASIS_STOP_PCT") ?: "")
+                ).filterValues { it.isNotBlank() },
+                reportPath = null,
+                runId = System.getenv("RUN_ID"),
+                notes = System.getenv("RUN_NOTES")
+            )
+        )
 
         var lastKpiMs = 0L
         replayer.stream().collect { snap ->

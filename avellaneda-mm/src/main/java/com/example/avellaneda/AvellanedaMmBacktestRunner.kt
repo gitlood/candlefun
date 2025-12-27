@@ -13,6 +13,9 @@ import com.example.avellaneda.metrics.AdverseSelectionTracker
 import com.example.avellaneda.metrics.FillStats
 import com.example.avellaneda.report.AvellanedaCsvReporter
 import com.example.avellaneda.report.AvellanedaReportRow
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.HealthSummary
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.math.abs
@@ -62,6 +65,7 @@ object AvellanedaMmBacktestRunner {
             println("ReportPath   : ${reporter.reportPath()}")
             println("ReportEveryMs: $reportEveryMs")
         }
+        val manifestWriter = ExperimentManifestWriter.fromEnv()
         val adverseProvider: (String) -> Double? = { symbol ->
             val adv = adverseTracker.snapshotBps(symbol)
             adv.getOrNull(1) ?: adv.lastOrNull()
@@ -120,6 +124,31 @@ object AvellanedaMmBacktestRunner {
             }
             AvellanedaMmStrategy(gateway, config, adverseProvider)
         }
+        manifestWriter?.write(
+            ExperimentManifest(
+                timestampMs = System.currentTimeMillis(),
+                strategy = "avellaneda",
+                mode = "backtest",
+                symbols = symbols,
+                params = mapOf(
+                    "MARKETSTATE_CSV" to inputPath,
+                    "REPLAY_SPEEDUP" to speedup.toString(),
+                    "FAST_MODE" to fastMode.toString(),
+                    "QUOTE_STYLE" to parseQuoteStyle(System.getenv("QUOTE_STYLE")).name,
+                    "ORDER_QTY" to (System.getenv("ORDER_QTY") ?: ""),
+                    "MAX_INVENTORY" to (System.getenv("MAX_INVENTORY") ?: ""),
+                    "MIN_AVG_SPREAD_PCT" to (System.getenv("MIN_AVG_SPREAD_PCT") ?: ""),
+                    "MAX_AVG_SPREAD_PCT" to (System.getenv("MAX_AVG_SPREAD_PCT") ?: ""),
+                    "ADAPTIVE_SPREAD_TARGET_BPS" to (System.getenv("ADAPTIVE_SPREAD_TARGET_BPS") ?: ""),
+                    "ADAPTIVE_SPREAD_UPDATE_MS" to (System.getenv("ADAPTIVE_SPREAD_UPDATE_MS") ?: ""),
+                    "MAKER_FEE_PCT" to makerFeePct.toString(),
+                    "TAKER_FEE_PCT" to takerFeePct.toString()
+                ).filterValues { it.isNotBlank() },
+                reportPath = reporter?.reportPath(),
+                runId = System.getenv("RUN_ID"),
+                notes = System.getenv("RUN_NOTES")
+            )
+        )
 
         var ticks = 0L
         var lastPnlLog = 0L
@@ -343,6 +372,21 @@ object AvellanedaMmBacktestRunner {
             )
         )
         println("adv: $advStr")
+        val totalNet = positions.sumOf { it.realizedPnl.value.toDouble() + it.unrealizedPnl.value.toDouble() }
+        val totalExposure = positions.sumOf { abs(it.quantity.value.toDouble() * it.avgPrice.value.toDouble()) }
+        val avgAdv = positions.mapNotNull { adverseTracker.snapshotBps(it.symbol.value).firstOrNull() }
+            .let { if (it.isEmpty()) null else it.average() }
+        println(
+            HealthSummary.render(
+                strategy = "avellaneda",
+                mode = "backtest",
+                net = totalNet,
+                fees = fillStats.totalFees,
+                adverseBps = avgAdv,
+                fills = fillStats.totalCount(),
+                exposure = totalExposure
+            )
+        )
     }
 
     private fun parseQuoteStyle(raw: String?): QuoteStyle {

@@ -23,6 +23,9 @@ import com.example.network.futures.interfaces.FuturesExchangeInfoService
 import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
 import com.example.platform.model.enums.OrderSide
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.HealthSummary
 import java.util.Locale
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
@@ -149,6 +152,26 @@ object OfiTestnetRunner {
                     kpiSink = kpiTracker
                 )
             }
+            val manifestWriter = ExperimentManifestWriter.fromEnv()
+            manifestWriter?.write(
+                ExperimentManifest(
+                    timestampMs = System.currentTimeMillis(),
+                    strategy = "ofi-kukanov",
+                    mode = "testnet",
+                    symbols = liveSymbols,
+                    params = mapOf(
+                        "MARKETDATA_SOURCE" to source,
+                        "OFI_WINDOW_MS" to (System.getenv("OFI_WINDOW_MS") ?: ""),
+                        "OFI_ENTRY_THRESHOLD" to (System.getenv("OFI_ENTRY_THRESHOLD") ?: ""),
+                        "OFI_EXIT_THRESHOLD" to (System.getenv("OFI_EXIT_THRESHOLD") ?: ""),
+                        "ORDER_STYLE" to (System.getenv("ORDER_STYLE") ?: ""),
+                        "LEVERAGE" to (System.getenv("LEVERAGE") ?: "")
+                    ).filterValues { it.isNotBlank() },
+                    reportPath = null,
+                    runId = System.getenv("RUN_ID"),
+                    notes = System.getenv("RUN_NOTES")
+                )
+            )
 
             println("Testnet execution running. Press Ctrl+C to stop.")
             var ticks = 0L
@@ -366,6 +389,21 @@ object OfiTestnetRunner {
                 "winRate=$winRate fillRate=$fillRate cancelRate=$cancelRate " +
                 "staleRate=$staleRate takeRate=$takeRate " +
                 "slipBps=$slip joinEdgeBps=$joinEdge advBps=$adverse latencyMs=$latency"
+        )
+        println(
+            HealthSummary.render(
+                strategy = "ofi-kukanov",
+                mode = "testnet",
+                net = summary.netPnl,
+                fees = summary.totalFees,
+                adverseBps = summary.avgAdverseMoveBps,
+                fills = summary.tradeCount,
+                exposure = null,
+                extra = mapOf(
+                    "win_rate" to winRate,
+                    "fill_rate" to fillRate
+                )
+            )
         )
     }
 

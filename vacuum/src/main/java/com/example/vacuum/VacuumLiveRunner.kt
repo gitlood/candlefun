@@ -12,6 +12,8 @@ import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
 import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
@@ -73,6 +75,23 @@ object VacuumLiveRunner {
             val kpiBySymbol = symbols.associateWith { symbol ->
                 VacuumKpiTracker(configFromEnv(symbol))
             }
+            val manifestWriter = ExperimentManifestWriter.fromEnv()
+            manifestWriter?.write(
+                ExperimentManifest(
+                    timestampMs = System.currentTimeMillis(),
+                    strategy = "vacuum",
+                    mode = "live",
+                    symbols = symbols,
+                    params = mapOf(
+                        "MARKETDATA_SOURCE" to source,
+                        "DEPTH_DROP_PCT" to (System.getenv("DEPTH_DROP_PCT") ?: ""),
+                        "SPREAD_WIDEN_PCT" to (System.getenv("SPREAD_WIDEN_PCT") ?: "")
+                    ).filterValues { it.isNotBlank() },
+                    reportPath = null,
+                    runId = System.getenv("RUN_ID"),
+                    notes = System.getenv("RUN_NOTES")
+                )
+            )
             val accountRepo = SimAccountStateRepository()
             val orderLatencyMs = System.getenv("SIM_ORDER_LATENCY_MS")?.toLongOrNull() ?: 0L
             val queueBuffer = System.getenv("SIM_QUEUE_BUFFER")?.toDoubleOrNull() ?: 1.0

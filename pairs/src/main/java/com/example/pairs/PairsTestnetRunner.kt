@@ -19,6 +19,8 @@ import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
 import com.example.network.futures.interfaces.FuturesExchangeInfoService
 import com.example.network.futures.interfaces.FuturesSymbolFilters
 import com.example.platform.model.MarketState
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -114,6 +116,24 @@ object PairsTestnetRunner {
             val configPairs = configFromEnv(symbolA, symbolB, futuresFilters)
             val kpi = PairsKpiTracker(configPairs)
             val strategy = PairsStrategy(gateway, configPairs, kpi)
+            val manifestWriter = ExperimentManifestWriter.fromEnv()
+            manifestWriter?.write(
+                ExperimentManifest(
+                    timestampMs = System.currentTimeMillis(),
+                    strategy = "pairs",
+                    mode = "testnet",
+                    symbols = listOf(symbolA, symbolB),
+                    params = mapOf(
+                        "ENTRY_Z" to (System.getenv("ENTRY_Z") ?: ""),
+                        "EXIT_Z" to (System.getenv("EXIT_Z") ?: ""),
+                        "WINDOW_MS" to (System.getenv("WINDOW_MS") ?: ""),
+                        "LEVERAGE" to leverage.toString()
+                    ).filterValues { it.isNotBlank() },
+                    reportPath = null,
+                    runId = System.getenv("RUN_ID"),
+                    notes = System.getenv("RUN_NOTES")
+                )
+            )
 
             val fillCounts = mutableMapOf(symbolA to 0, symbolB to 0)
             val lastFillTime = mutableMapOf(symbolA to 0L, symbolB to 0L)

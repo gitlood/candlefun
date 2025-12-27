@@ -17,6 +17,9 @@ import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
 import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.HealthSummary
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
@@ -110,6 +113,25 @@ object OfiLiveRunner {
                     kpiSink = kpiTracker
                 )
             }
+            val manifestWriter = ExperimentManifestWriter.fromEnv()
+            manifestWriter?.write(
+                ExperimentManifest(
+                    timestampMs = System.currentTimeMillis(),
+                    strategy = "ofi-kukanov",
+                    mode = "live",
+                    symbols = symbols,
+                    params = mapOf(
+                        "MARKETDATA_SOURCE" to source,
+                        "OFI_WINDOW_MS" to (System.getenv("OFI_WINDOW_MS") ?: ""),
+                        "OFI_ENTRY_THRESHOLD" to (System.getenv("OFI_ENTRY_THRESHOLD") ?: ""),
+                        "OFI_EXIT_THRESHOLD" to (System.getenv("OFI_EXIT_THRESHOLD") ?: ""),
+                        "ORDER_STYLE" to (System.getenv("ORDER_STYLE") ?: "")
+                    ).filterValues { it.isNotBlank() },
+                    reportPath = null,
+                    runId = System.getenv("RUN_ID"),
+                    notes = System.getenv("RUN_NOTES")
+                )
+            )
 
             println("Live paper engine running. Press Ctrl+C to stop.")
             var ticks = 0L
@@ -244,6 +266,21 @@ object OfiLiveRunner {
                 "joinEdgeBps=$joinEdge takeSlipBps=$slip adverseBps=$adverse latencyMs=$latency " +
                 "trades=${summary.tradeCount} winRate=$winRate fillRate=$fillRate cancelRate=$cancelRate " +
                 "staleCancelRate=$staleRate takeRate=$takeRate"
+        )
+        println(
+            HealthSummary.render(
+                strategy = "ofi-kukanov",
+                mode = "live",
+                net = summary.netPnl,
+                fees = summary.totalFees,
+                adverseBps = summary.avgAdverseMoveBps,
+                fills = summary.tradeCount,
+                exposure = null,
+                extra = mapOf(
+                    "win_rate" to winRate,
+                    "fill_rate" to fillRate
+                )
+            )
         )
     }
 }

@@ -21,7 +21,8 @@ object MarketStateRecorderRunner {
     fun main(args: Array<String>) = runBlocking {
         val outputPath = System.getenv("MARKETSTATE_RECORD_PATH")
             ?: MarketStateRecorderConfig.default().outputPath
-        val outputFile = File(outputPath)
+        val timestamped = System.getenv("RECORD_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
+        val outputFile = File(applyTimestamp(outputPath, timestamped))
         val truncate = System.getenv("RECORD_TRUNCATE")?.toBooleanStrictOrNull() ?: true
         val parentDir = outputFile.parentFile
         if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs()) {
@@ -45,8 +46,9 @@ object MarketStateRecorderRunner {
         val durationSec = System.getenv("DURATION_SEC")?.toLongOrNull()
 
         println("MarketState recorder starting...")
-        println("Output       : $outputPath")
+        println("Output       : ${outputFile.absolutePath}")
         println("Truncate     : $truncate")
+        println("Timestamped  : $timestamped")
         println("Source       : $source")
         println("TopN         : $topN")
         println("TickMs       : $tickMs")
@@ -114,5 +116,20 @@ object MarketStateRecorderRunner {
         println("Fetching universe...")
         val config = UniverseConfig(maxSymbols = topN)
         return universe.fetchTopSymbols(config).map { it.symbol.asSymbol() }
+    }
+
+    private fun applyTimestamp(path: String, timestamped: Boolean): String {
+        if (!timestamped) return path
+        val file = File(path)
+        val name = file.name
+        val dot = name.lastIndexOf('.')
+        val base = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        val ts = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+            .withZone(java.time.ZoneOffset.UTC)
+            .format(java.time.Instant.now())
+        val stamped = "${base}_$ts$ext"
+        val parent = file.parentFile
+        return if (parent == null) stamped else File(parent, stamped).absolutePath
     }
 }

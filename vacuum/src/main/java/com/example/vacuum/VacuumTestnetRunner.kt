@@ -19,6 +19,8 @@ import com.example.network.futures.di.futuresModule
 import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -56,6 +58,24 @@ object VacuumTestnetRunner {
         println("Leverage     : $leverage")
         println("FillsPollMs  : $fillsPollMs")
         println("PnlEveryMs   : $logPnlEveryMs")
+
+        val manifestWriter = ExperimentManifestWriter.fromEnv()
+        manifestWriter?.write(
+            ExperimentManifest(
+                timestampMs = System.currentTimeMillis(),
+                strategy = "vacuum",
+                mode = "testnet",
+                symbols = symbols,
+                params = mapOf(
+                    "LEVERAGE" to leverage.toString(),
+                    "DEPTH_DROP_PCT" to (System.getenv("DEPTH_DROP_PCT") ?: ""),
+                    "SPREAD_WIDEN_PCT" to (System.getenv("SPREAD_WIDEN_PCT") ?: "")
+                ).filterValues { it.isNotBlank() },
+                reportPath = null,
+                runId = System.getenv("RUN_ID"),
+                notes = System.getenv("RUN_NOTES")
+            )
+        )
 
         val koinApp = startKoin {
             modules(networkModule, futuresModule, accountImplModule, executionImplModule)

@@ -65,6 +65,15 @@ KPI summaries are printed to stdout at `LOG_KPI_EVERY_MS`. Key fields include:
 - `netPnl`, `realizedPnl`, `unrealizedPnl`
 - `avgSlippageBps`, `avgJoinEdgeBps`, `avgAdverseMoveBps`
 - `tradeCount`, `winRate`, `fillRate`, `cancelRate`, `staleCancelRate`, `takeRate`
+- `health_summary` line (standard cross-strategy format)
+
+## Manifest Logging (JSONL)
+
+- `MANIFEST_ENABLED` (default `true`)
+- `MANIFEST_PATH` (file override)
+- `MANIFEST_TIMESTAMPED` (default `false`)
+- `REPORT_DIR` (directory override)
+- `RUN_ID`, `RUN_NOTES`
 
 ## How To Interpret The Report (AI Notes)
 

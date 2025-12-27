@@ -97,12 +97,12 @@ data class RoutingDecision(
     val clientOrderId: String? = null
 )
 
-internal fun confidenceWeight(confidence: Double, exponent: Double): Double {
+fun confidenceWeight(confidence: Double, exponent: Double): Double {
     if (confidence <= 0.0) return 0.0
     if (confidence >= 1.0) return 1.0
     return confidence.pow(exponent)
 }
 
-internal fun riskUnits(intent: StrategyIntent, scaledDelta: Qty): Double {
+fun riskUnits(intent: StrategyIntent, scaledDelta: Qty): Double {
     return intent.riskBudgetRequest ?: abs(scaledDelta.value.toDouble())
 }

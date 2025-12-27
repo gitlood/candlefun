@@ -10,6 +10,8 @@ import com.example.marketdata.repository.MarketStateRepository
 import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
 import com.example.platform.model.MarketState
+import com.example.platform.report.ExperimentManifest
+import com.example.platform.report.ExperimentManifestWriter
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
@@ -74,6 +76,24 @@ object PairsLiveRunner {
                 takerFeePct = takerFeePct
             )
             val strategy = PairsStrategy(gateway, configPairs, kpi)
+            val manifestWriter = ExperimentManifestWriter.fromEnv()
+            manifestWriter?.write(
+                ExperimentManifest(
+                    timestampMs = System.currentTimeMillis(),
+                    strategy = "pairs",
+                    mode = "live",
+                    symbols = listOf(symbolA, symbolB),
+                    params = mapOf(
+                        "MARKETDATA_SOURCE" to source,
+                        "ENTRY_Z" to (System.getenv("ENTRY_Z") ?: ""),
+                        "EXIT_Z" to (System.getenv("EXIT_Z") ?: ""),
+                        "WINDOW_MS" to (System.getenv("WINDOW_MS") ?: "")
+                    ).filterValues { it.isNotBlank() },
+                    reportPath = null,
+                    runId = System.getenv("RUN_ID"),
+                    notes = System.getenv("RUN_NOTES")
+                )
+            )
 
             var lastKpiMs = 0L
             val symbolList = listOf(symbolA.asSymbol(), symbolB.asSymbol())

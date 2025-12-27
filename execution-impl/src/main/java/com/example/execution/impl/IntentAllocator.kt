@@ -1,6 +1,5 @@
 package com.example.execution.impl
 
-import com.example.account.domain.Price
 import com.example.account.domain.Qty
 import com.example.execution.domain.IntentAllocation
 import com.example.execution.domain.NettingSummary
@@ -37,7 +36,7 @@ class IntentAllocator(
                 appliedScale = scale,
                 rejectionReason = when {
                     enabled.not() -> regime?.reason ?: "regime disabled"
-                    scaledDelta.value == BigDecimal.ZERO -> "no delta after scaling"
+                    scaledDelta.value.compareTo(BigDecimal.ZERO) == 0 -> "no delta after scaling"
                     else -> null
                 }
             )
@@ -55,9 +54,9 @@ class IntentAllocator(
         }
 
         val routed = netSummaries.mapNotNull { summary ->
-            if (summary.netDelta.value == BigDecimal.ZERO) return@mapNotNull null
+            if (summary.netDelta.value.compareTo(BigDecimal.ZERO) == 0) return@mapNotNull null
 
-            val weighted = summary.allocations.filter { it.acceptedDelta.value != BigDecimal.ZERO }
+            val weighted = summary.allocations.filter { it.acceptedDelta.value.compareTo(BigDecimal.ZERO) != 0 }
                 .map { alloc ->
                     val weight = confidenceWeight(
                         confidence = alloc.intent.confidence,
