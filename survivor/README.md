@@ -50,3 +50,46 @@ symbol,timestampMs,fundingRate,nextFundingTimeMs,markPrice,indexPrice,spreadPct,
 - `MAKER_FEE_PCT`, `TAKER_FEE_PCT`
 - `BORROW_FEE_PCT_DAY`
 - `LOG_SIGNALS`
+
+## KPI Output (Reporting)
+
+KPI summaries are printed to stdout at `LOG_KPI_EVERY_MS` via `SurvivorReport`.
+
+Key fields:
+- `netCarry`, `realizedFunding`, `realizedFees`, `borrowCosts`
+- `expectedCarry`, `worstBasisAbsPct`
+- `cancelRate`, `staleCancelRate`
+
+## How To Interpret The Report (AI Notes)
+
+- **netCarry** should be positive over time; negative means fees/borrow or bad basis.
+- **worstBasisAbsPct** high indicates basis risk spikes.
+- **expectedCarry** vs **netCarry** shows slippage/fee drag.
+- **cancelRate** high indicates unstable conditions or overly tight gates.
+
+## Tuning Playbook
+
+- **If `netCarry` < 0**:
+  - Increase `ENTRY_FUNDING` magnitude or tighten `EXIT_FUNDING`.
+  - Lower `ORDER_QTY` to reduce borrow/fee drag.
+  - Tighten `MAX_SPREAD_PCT` and `MAX_VOL`.
+
+- **If `worstBasisAbsPct` is high**:
+  - Reduce `MAX_OI_JUMP_PCT` or shorten `OI_WINDOW_MS`.
+  - Lower `MAX_HOLD_MS`.
+
+- **If no trades occur**:
+  - Loosen `ENTRY_FUNDING`, widen `BASIS_STOP_PCT`.
+  - Check CSV freshness or funding polling.
+
+## Decision Tree
+
+```
+Is netCarry positive?
+  ├─ Yes → Is worstBasisAbsPct stable?
+  │        ├─ Yes → Keep settings; extend duration.
+  │        └─ No  → Tighten basis risk limits.
+  └─ No  → Are fees/borrow high?
+           ├─ Yes → Reduce size, tighten entry/exit.
+           └─ No  → Loosen entry threshold; check data freshness.
+```

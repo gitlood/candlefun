@@ -36,3 +36,41 @@ Pairs mean reversion using rolling beta, spread z-score, and regime filters.
 - `BINANCE_FUTURES_TESTNET_API_KEY`, `BINANCE_FUTURES_TESTNET_SECRET_KEY`
 - `FILLS_POLL_MS`, `LEVERAGE`
 - `LOG_PNL_EVERY_MS`, `RESET_WALLET`, `WALLET_AUTOPERSIST`
+
+## KPI Output (Reporting)
+
+KPI summaries are printed to stdout at `LOG_KPI_EVERY_MS` via `PairsReport`.
+
+Key fields:
+- `avgHalfLifeMs`, `tailEvents`
+- `realizedPnL`, `totalFees`, `netPnL`
+
+## How To Interpret The Report (AI Notes)
+
+- **netPnL** should trend positive over multiple cycles.
+- **avgHalfLifeMs** too long means exits are slow or entry too aggressive.
+- **tailEvents** high suggests regime mismatch or weak filters.
+
+## Tuning Playbook
+
+- **If `netPnL` < 0**:
+  - Increase `ENTRY_Z`, or tighten `MIN_CORR`/`MAX_VOL`.
+  - Reduce `NOTIONAL`.
+
+- **If `avgHalfLifeMs` is high**:
+  - Lower `MAX_HOLD_MS`.
+  - Increase `EXIT_Z` aggressiveness.
+
+- **If trades are rare**:
+  - Lower `ENTRY_Z` or relax `MIN_CORR`.
+  - Increase `WINDOW_MS` to stabilize signal.
+
+## Decision Tree
+
+```
+Is netPnL positive?
+  ├─ Yes → Is avgHalfLifeMs reasonable?
+  │        ├─ Yes → Keep settings; extend duration.
+  │        └─ No  → Tighten exit, reduce hold.
+  └─ No  → Increase entry Z or tighten filters.
+```

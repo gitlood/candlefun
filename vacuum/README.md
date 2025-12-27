@@ -38,3 +38,41 @@ Captures fast jumps when depth collapses, spread widens, and trade burst aligns.
 - `TRAILING_STOP_BPS`
 - `SLIPPAGE_PAUSE_BPS`, `TAIL_LOSS_BPS`, `MAX_TAIL_LOSSES`, `PAUSE_MS`
 - `LOG_SIGNALS`, `LOG_KPI_EVERY_MS`
+
+## KPI Output (Reporting)
+
+KPI summaries are printed to stdout at `LOG_KPI_EVERY_MS` via `VacuumReport`.
+
+Key fields:
+- `avgSlippageBps`, `avgAdverseMoveBps`
+- `tailLossCount`, `lastSlippageBps`
+- `cancelRate`, `staleCancelRate`
+
+## How To Interpret The Report (AI Notes)
+
+- **avgSlippageBps** high means you are crossing into thin book.
+- **avgAdverseMoveBps** negative means post-fill drift against you.
+- **tailLossCount** rising implies tail events are punishing.
+
+## Tuning Playbook
+
+- **If slippage/adverse is high**:
+  - Increase `DEPTH_DROP_PCT` and `SPREAD_WIDEN_PCT`.
+  - Increase `ENTRY_COOLDOWN_MS` and `ORDER_TTL_MS`.
+  - Reduce `ORDER_QTY`.
+
+- **If no trades occur**:
+  - Lower `DEPTH_DROP_PCT`, `SPREAD_WIDEN_PCT`, or `MIN_TRADE_COUNT_1S`.
+  - Reduce `ENTRY_COOLDOWN_MS`.
+
+- **If tail losses spike**:
+  - Lower `TAIL_LOSS_BPS`, increase `SLIPPAGE_PAUSE_BPS`.
+  - Increase `PAUSE_MS` after tail events.
+
+## Decision Tree
+
+```
+Are tailLossCount and slippage low?
+  ├─ Yes → Keep settings; extend duration.
+  └─ No  → Increase thresholds, reduce size, lengthen cooldown.
+```

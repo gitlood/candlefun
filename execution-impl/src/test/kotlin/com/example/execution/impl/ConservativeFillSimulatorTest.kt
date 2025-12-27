@@ -56,6 +56,27 @@ class ConservativeFillSimulatorTest {
         assertTrue(fills.isEmpty())
     }
 
+    @Test
+    fun `respects queue ahead and sell side`() {
+        val simulator = ConservativeFillSimulator(queueBufferMultiplier = 1.0, maxDepthLevels = 1)
+        val orders = listOf(
+            order(id = 1L, side = OrderSide.SELL, price = 101.0, qty = 1.0),
+            order(id = 2L, side = OrderSide.SELL, price = 100.0, qty = 1.0)
+        )
+        val state = marketState(
+            lastTradePrice = 101.0,
+            lastTradeQty = 0.5,
+            lastTradeIsBuyerMaker = false,
+            bidLevels = listOf(BookLevel(price = 99.0, quantity = 1.0)),
+            askLevels = listOf(BookLevel(price = 101.0, quantity = 1.0))
+        )
+
+        val fills = simulator.matchFills(state, orders)
+
+        assertEquals(1, fills.size)
+        assertEquals(2L, fills[0].orderId)
+    }
+
     private fun order(id: Long, side: OrderSide, price: Double, qty: Double): ExecutionOrder {
         return ExecutionOrder(
             symbol = Symbol.of("BTCUSDT"),
