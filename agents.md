@@ -2,6 +2,10 @@
 
 This document details the five algorithmic trading agents (strategies) and the central portfolio engine designed for the CandleFun application. It is intended to be implementation-ready: key parameters include defaults and units; state transitions and risk controls are explicit.
 
+## Repo Notes
+*   **AGENTS.md Missing**: No `AGENTS.md` file exists in this workspace; this file is the canonical source for agent guidance.
+*   **Branching**: Codex may create and work on a new branch when the user explicitly asks. Otherwise, stay on the current branch.
+
 ## Global Conventions
 *   **Timebase**: Market data sampled at 100ms unless otherwise noted. All rolling windows are in milliseconds.
 *   **Prices**: Quoted in quote currency (e.g., USD). Bps = 1/100th of 1%.
