@@ -93,5 +93,17 @@ We measure success not just by PnL, but by:
 *   **Inventory Drift**: Are we staying within target exposures?
 *   **Fee Savings**: How much did internal netting save vs. independent bots?
 
+## 🧾 Avellaneda Reports (CSV)
+
+Avellaneda runners can emit per-symbol CSV snapshots for quick review and tuning.
+
+*   **Default path**: `reports/avellaneda/avellaneda_<mode>.csv` (`backtest`, `live`, `testnet`)
+*   **Env knobs**:
+    *   `REPORT_ENABLED` (default `true`)
+    *   `REPORT_EVERY_MS` (default `60000`)
+    *   `REPORT_DIR` (directory override)
+    *   `REPORT_PATH` (file override)
+    *   `AVELLANEDA_REPORT_PATH` (Avellaneda-specific file override)
+
 ---
 *Built with ❤️ and Kotlin.*
