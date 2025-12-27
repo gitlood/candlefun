@@ -11,16 +11,26 @@ import com.example.account.domain.AccountStateRepository
 import com.example.account.domain.Money
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.impl.FillRecord
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
 import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
+import com.example.network.futures.helper.FuturesUserStreamTelemetry
 import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
+import com.example.network.futures.interfaces.FuturesUserDataService
+import com.example.network.futures.interfaces.FuturesWebSocketService
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -28,17 +38,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
+import java.io.File
 import org.koin.core.qualifier.named
 import kotlin.time.Duration.Companion.milliseconds
 import com.example.account.impl.di.accountImplModule
 import com.example.execution.impl.di.executionImplModule
-import java.io.File
 import java.math.BigDecimal
 
 object VacuumTestnetRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("vacuum_testnet")
+        Telemetry.configureFromEnv("vacuum_testnet", defaultEnabled = true)
         val symbolsEnv = System.getenv("SYMBOLS")
         val tickMs = System.getenv("TICK_MS")?.toLongOrNull() ?: 250L
         val depthLevels = System.getenv("DEPTH_LEVELS")?.toIntOrNull() ?: 10
@@ -61,6 +71,7 @@ object VacuumTestnetRunner {
         println("FillsPollMs  : $fillsPollMs")
         println("PnlEveryMs   : $logPnlEveryMs")
 
+        val telemetryPath = Telemetry.resolveReportPathFromEnv("vacuum_testnet", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
         manifestWriter?.write(
             ExperimentManifest(
@@ -73,9 +84,16 @@ object VacuumTestnetRunner {
                     "DEPTH_DROP_PCT" to (System.getenv("DEPTH_DROP_PCT") ?: ""),
                     "SPREAD_WIDEN_PCT" to (System.getenv("SPREAD_WIDEN_PCT") ?: "")
                 ).filterValues { it.isNotBlank() },
-                reportPath = null,
+                reportPath = telemetryPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
+            )
+        )
+        GistUploader.installUploadOnShutdown(
+            label = "vacuum_testnet",
+            files = listOfNotNull(
+                telemetryPath?.let { File(it) },
+                manifestWriter?.path()?.let { File(it) }
             )
         )
 
@@ -125,10 +143,13 @@ object VacuumTestnetRunner {
             )
 
             val kpiBySymbol = symbols.associateWith { VacuumKpiTracker(configFromEnv(it)) }
-            val strategies = symbols.associateWith { symbol ->
+            val strategies = symbols.map { symbol ->
                 val kpi = kpiBySymbol[symbol] ?: error("KPI missing for $symbol")
-                VacuumStrategy(gateway, configFromEnv(symbol), kpi)
+                VacuumIntentStrategy(config = configFromEnv(symbol), kpi = kpi)
             }
+            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val policy = ExecutionPolicy(gateway)
+            val engine = PortfolioEngine(gateway, allocator, policy, strategies)
 
             val fillCounts = symbols.associateWith { 0 }.toMutableMap()
             val lastFillTime = symbols.associateWith { 0L }.toMutableMap()
@@ -153,45 +174,70 @@ object VacuumTestnetRunner {
             var lastPnlMs = 0L
             var lastFillTotal = 0
             val symbolList = symbols.map { it.asSymbol() }
+            val userData = koin.get<FuturesUserDataService>()
+            val userWs = koin.get<FuturesWebSocketService>()
+            FuturesUserStreamTelemetry.start(this, userData, userWs)
             val flow: Flow<MarketState> = repo.streamMarketState(symbolList, config)
-            flow.collect { state ->
-                strategies[state.symbol]?.onMarketState(state)
-                kpiBySymbol[state.symbol]?.onMarketState(
-                    state.symbol,
-                    state.midPrice ?: state.microPrice,
-                    state.timestampMs
-                )
-                inventoryRepo.applyMarkPrice(
-                    Symbol.of(state.symbol),
-                    Price.fromDouble(state.midPrice ?: state.lastTradePrice ?: return@collect),
-                    state.eventTimeMs ?: state.timestampMs
-                )
-                ticks++
-                val now = state.eventTimeMs ?: state.timestampMs
-                if (ticks % logEvery == 0L) {
-                    println("ticks=$ticks last=${state.symbol} t=${state.timestampMs}")
-                }
-                if (lastKpiMs == 0L) lastKpiMs = now
-                if (now - lastKpiMs >= kpiEveryMs) {
-                    kpiBySymbol.forEach { (symbol, kpi) ->
-                        VacuumReport.print(kpi.summary(), "VACUUM TESTNET KPI $symbol")
-                    }
-                    lastKpiMs = now
-                }
-                if (lastPnlMs == 0L) lastPnlMs = now
-                if (now - lastPnlMs >= logPnlEveryMs) {
-                    logPnlSummary(inventoryRepo, symbols.toSet())
-                    logHealthSummary(
-                        inventoryRepo,
-                        symbols.toSet(),
-                        fillCounts,
-                        lastFillTotal,
-                        lastPnlMs,
-                        now
+            try {
+                flow.collect { state ->
+                    engine.onMarketState(state)
+                    kpiBySymbol[state.symbol]?.onMarketState(
+                        state.symbol,
+                        state.midPrice ?: state.microPrice,
+                        state.timestampMs
                     )
-                    lastFillTotal = fillCounts.values.sum()
-                    lastPnlMs = now
+                    inventoryRepo.applyMarkPrice(
+                        Symbol.of(state.symbol),
+                        Price.fromDouble(state.midPrice ?: state.lastTradePrice ?: return@collect),
+                        state.eventTimeMs ?: state.timestampMs
+                    )
+                    ticks++
+                    val now = state.eventTimeMs ?: state.timestampMs
+                    if (ticks % logEvery == 0L) {
+                        println("ticks=$ticks last=${state.symbol} t=${state.timestampMs}")
+                    }
+                    if (lastKpiMs == 0L) lastKpiMs = now
+                    if (now - lastKpiMs >= kpiEveryMs) {
+                        kpiBySymbol.forEach { (symbol, kpi) ->
+                            VacuumReport.print(kpi.summary(), "VACUUM TESTNET KPI $symbol")
+                        }
+                        lastKpiMs = now
+                    }
+                    if (lastPnlMs == 0L) lastPnlMs = now
+                    if (now - lastPnlMs >= logPnlEveryMs) {
+                        logPnlSummary(inventoryRepo, symbols.toSet())
+                        logHealthSummary(
+                            inventoryRepo,
+                            symbols.toSet(),
+                            fillCounts,
+                            lastFillTotal,
+                            lastPnlMs,
+                            now
+                        )
+                        lastFillTotal = fillCounts.values.sum()
+                        lastPnlMs = now
+                    }
                 }
+            } finally {
+                val summary = kpiBySymbol.values.firstOrNull()?.summary() ?: VacuumKpiSummary(
+                    avgSlippageBps = null,
+                    avgAdverseMoveBps = null,
+                    tailLossCount = 0,
+                    lastSlippageBps = null,
+                    cancelRate = null,
+                    staleCancelRate = null
+                )
+                writeVacuumTestnetSummary(
+                    summary = summary,
+                    telemetryPath = telemetryPath,
+                    manifestPath = manifestWriter?.path(),
+                    configs = mapOf(
+                        "symbols" to symbols.joinToString(","),
+                        "LEVERAGE" to leverage.toString(),
+                        "DEPTH_DROP_PCT" to (System.getenv("DEPTH_DROP_PCT") ?: ""),
+                        "SPREAD_WIDEN_PCT" to (System.getenv("SPREAD_WIDEN_PCT") ?: "")
+                    )
+                )
             }
         } finally {
             stopKoin()
@@ -397,5 +443,51 @@ object VacuumTestnetRunner {
                 sumAbsQty
             )
         )
+    }
+
+    private fun writeVacuumTestnetSummary(
+        summary: VacuumKpiSummary,
+        telemetryPath: String?,
+        manifestPath: String?,
+        configs: Map<String, String>
+    ) {
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "vacuum",
+                mode = "testnet",
+                timestampMs = System.currentTimeMillis(),
+                configs = configs.filterValues { it.isNotBlank() },
+                metrics = mapOf(
+                    "avg_slippage_bps" to summary.avgSlippageBps,
+                    "avg_adverse_move_bps" to summary.avgAdverseMoveBps,
+                    "tail_loss_count" to summary.tailLossCount
+                ),
+                health = mapOf(
+                    "last_slippage_bps" to summary.lastSlippageBps,
+                    "cancel_rate" to summary.cancelRate,
+                    "stale_cancel_rate" to summary.staleCancelRate
+                ),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
+    }
+
+    private fun findProjectRoot(): File {
+        var dir = File(System.getProperty("user.dir"))
+        while (true) {
+            if (File(dir, "settings.gradle.kts").exists()) return dir
+            val parent = dir.parentFile ?: return dir
+            dir = parent
+        }
     }
 }

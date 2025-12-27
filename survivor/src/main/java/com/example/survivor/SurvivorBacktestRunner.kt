@@ -9,7 +9,13 @@ import com.example.network.futures.interfaces.FuturesMarketDataService
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
 import com.example.platform.report.Telemetry
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
 import java.io.File
 import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
@@ -25,7 +31,7 @@ import org.koin.core.context.stopKoin
 object SurvivorBacktestRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("survivor_backtest")
+        Telemetry.configureFromEnv("survivor_backtest", defaultEnabled = true)
         val inputPath = args.getOrNull(0)
             ?: System.getenv("SURVIVOR_CSV")
             ?: defaultPath()
@@ -47,10 +53,13 @@ object SurvivorBacktestRunner {
 
         val config = configFromEnv()
         val kpi = SurvivorKpiTracker(config)
-        val gates = SurvivorGateStats()
         val gateway = SurvivorPaperGateway { fill -> kpi.onFill(fill) }
-        val strategy = SurvivorStrategy(gateway, config, kpi, gates)
+        val strategy = SurvivorIntentStrategy(config)
+        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val policy = ExecutionPolicy(gateway)
+        val engine = SurvivorPortfolioEngine(gateway, allocator, policy, strategy)
         val replayer = SurvivorCsvReplayer(file, speedup = speedup)
+        val telemetryPath = Telemetry.resolveReportPathFromEnv("survivor_backtest", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
         manifestWriter?.write(
             ExperimentManifest(
@@ -65,25 +74,85 @@ object SurvivorBacktestRunner {
                     "EXIT_FUNDING" to (System.getenv("EXIT_FUNDING") ?: ""),
                     "BASIS_STOP_PCT" to (System.getenv("BASIS_STOP_PCT") ?: "")
                 ).filterValues { it.isNotBlank() },
-                reportPath = null,
+                reportPath = telemetryPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
+            )
+        )
+        GistUploader.installUploadOnShutdown(
+            label = "survivor_backtest",
+            files = listOfNotNull(
+                telemetryPath?.let { File(it) },
+                manifestWriter?.path()?.let { File(it) }
             )
         )
 
         var lastKpiMs = 0L
         replayer.stream().collect { snap ->
-            strategy.onSnapshot(snap)
+            engine.onSnapshot(snap)
             val now = snap.timestampMs
             if (lastKpiMs == 0L) lastKpiMs = now
             if (now - lastKpiMs >= logEveryMs) {
                 SurvivorReport.print(kpi.summary(), "SURVIVOR BACKTEST KPI")
-                println(gates.report())
                 lastKpiMs = now
             }
         }
-        SurvivorReport.print(kpi.summary(), "SURVIVOR BACKTEST KPI")
-        println(gates.report())
+        val finalSummary = kpi.summary()
+        SurvivorReport.print(finalSummary, "SURVIVOR BACKTEST KPI")
+        writeSurvivorSummary(
+            config = config,
+            summary = finalSummary,
+            telemetryPath = telemetryPath,
+            manifestPath = manifestWriter?.path(),
+            mode = "backtest"
+        )
+    }
+
+    private fun writeSurvivorSummary(
+        config: SurvivorConfig,
+        summary: SurvivorKpiSummary,
+        telemetryPath: String?,
+        manifestPath: String?,
+        mode: String
+    ) {
+        val configs = mapOf(
+            "symbol" to config.symbol,
+            "order_qty" to config.orderQty.toString(),
+            "entry_funding_threshold" to config.entryFundingThreshold.toString(),
+            "exit_funding_threshold" to config.exitFundingThreshold.toString(),
+            "basis_stop_pct" to config.basisStopAbsPct.toString()
+        ).filterValues { it.isNotBlank() }
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "survivor",
+                mode = mode,
+                timestampMs = System.currentTimeMillis(),
+                configs = configs,
+                metrics = mapOf(
+                    "net_carry" to summary.netCarry,
+                    "realized_funding" to summary.realizedFunding,
+                    "realized_fees" to summary.realizedFees,
+                    "borrow_costs" to summary.borrowCosts,
+                    "expected_carry" to summary.expectedCarry,
+                    "worst_basis_abs_pct" to summary.worstBasisAbsPct
+                ),
+                health = mapOf(
+                    "cancel_rate" to summary.cancelRate,
+                    "stale_cancel_rate" to summary.staleCancelRate
+                ),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
     }
 
     private fun defaultPath(): String {

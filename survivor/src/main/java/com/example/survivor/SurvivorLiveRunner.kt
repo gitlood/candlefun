@@ -2,14 +2,20 @@ package com.example.survivor
 
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
 object SurvivorLiveRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("survivor_live")
+        Telemetry.configureFromEnv("survivor_live", defaultEnabled = true)
         val inputPath = args.getOrNull(0)
             ?: System.getenv("SURVIVOR_TAIL_CSV")
             ?: defaultPath()
@@ -22,10 +28,13 @@ object SurvivorLiveRunner {
 
         val config = configFromEnv()
         val kpi = SurvivorKpiTracker(config)
-        val gates = SurvivorGateStats()
         val gateway = SurvivorPaperGateway { fill -> kpi.onFill(fill) }
-        val strategy = SurvivorStrategy(gateway, config, kpi, gates)
+        val strategy = SurvivorIntentStrategy(config)
+        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val policy = ExecutionPolicy(gateway)
+        val engine = SurvivorPortfolioEngine(gateway, allocator, policy, strategy)
         val tailer = SurvivorCsvTailer(file, pollMs = pollMs)
+        val telemetryPath = Telemetry.resolveReportPathFromEnv("survivor_live", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
         manifestWriter?.write(
             ExperimentManifest(
@@ -37,22 +46,40 @@ object SurvivorLiveRunner {
                     "SURVIVOR_TAIL_CSV" to inputPath,
                     "TAIL_POLL_MS" to pollMs.toString()
                 ).filterValues { it.isNotBlank() },
-                reportPath = null,
+                reportPath = telemetryPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
             )
         )
+        GistUploader.installUploadOnShutdown(
+            label = "survivor_live",
+            files = listOfNotNull(
+                telemetryPath?.let { File(it) },
+                manifestWriter?.path()?.let { File(it) }
+            )
+        )
 
         var lastKpiMs = 0L
-        tailer.stream().collect { snap ->
-            strategy.onSnapshot(snap)
-            val now = snap.timestampMs
-            if (lastKpiMs == 0L) lastKpiMs = now
-            if (now - lastKpiMs >= logEveryMs) {
-                SurvivorReport.print(kpi.summary(), "SURVIVOR LIVE KPI")
-                println(gates.report())
-                lastKpiMs = now
+        try {
+            tailer.stream().collect { snap ->
+                engine.onSnapshot(snap)
+                val now = snap.timestampMs
+                if (lastKpiMs == 0L) lastKpiMs = now
+                if (now - lastKpiMs >= logEveryMs) {
+                    SurvivorReport.print(kpi.summary(), "SURVIVOR LIVE KPI")
+                    lastKpiMs = now
+                }
             }
+        } finally {
+            val summary = kpi.summary()
+            SurvivorReport.print(summary, "SURVIVOR LIVE KPI")
+            writeSurvivorLiveSummary(
+                config = config,
+                summary = summary,
+                telemetryPath = telemetryPath,
+                manifestPath = manifestWriter?.path(),
+                mode = "live"
+            )
         }
     }
 
@@ -93,6 +120,53 @@ object SurvivorLiveRunner {
             allowHedge = System.getenv("ALLOW_HEDGE")?.toBooleanStrictOrNull() ?: base.allowHedge,
             logSignals = System.getenv("LOG_SIGNALS")?.toBooleanStrictOrNull() ?: base.logSignals
         )
+    }
+
+    private fun writeSurvivorLiveSummary(
+        config: SurvivorConfig,
+        summary: SurvivorKpiSummary,
+        telemetryPath: String?,
+        manifestPath: String?,
+        mode: String
+    ) {
+        val configs = mapOf(
+            "symbol" to config.symbol,
+            "order_qty" to config.orderQty.toString(),
+            "entry_funding_threshold" to config.entryFundingThreshold.toString(),
+            "exit_funding_threshold" to config.exitFundingThreshold.toString(),
+            "basis_stop_pct" to config.basisStopAbsPct.toString()
+        ).filterValues { it.isNotBlank() }
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "survivor",
+                mode = mode,
+                timestampMs = System.currentTimeMillis(),
+                configs = configs,
+                metrics = mapOf(
+                    "net_carry" to summary.netCarry,
+                    "realized_funding" to summary.realizedFunding,
+                    "realized_fees" to summary.realizedFees,
+                    "borrow_costs" to summary.borrowCosts,
+                    "expected_carry" to summary.expectedCarry,
+                    "worst_basis_abs_pct" to summary.worstBasisAbsPct
+                ),
+                health = mapOf(
+                    "cancel_rate" to summary.cancelRate,
+                    "stale_cancel_rate" to summary.staleCancelRate
+                ),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
     }
 
 }

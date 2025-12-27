@@ -3,9 +3,16 @@ package com.example.vacuum
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.impl.replay.MarketStateReplayer
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -13,7 +20,7 @@ import java.io.File
 object VacuumBacktestRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("vacuum_backtest")
+        Telemetry.configureFromEnv("vacuum_backtest", defaultEnabled = true)
         val inputPath = args.getOrNull(0)
             ?: System.getenv("MARKETSTATE_CSV")
             ?: defaultMarketStatePath()
@@ -54,7 +61,11 @@ object VacuumBacktestRunner {
             takerFeePct = takerFeePct,
             fillListener = { fill -> kpi.onFill(fill) }
         )
-        val strategy = VacuumStrategy(gateway, config, kpi)
+        val strategy = VacuumIntentStrategy(config = config, kpi = kpi)
+        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val policy = ExecutionPolicy(gateway)
+        val engine = PortfolioEngine(gateway, allocator, policy, listOf(strategy))
+        val telemetryPath = Telemetry.resolveReportPathFromEnv("vacuum_backtest", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
         manifestWriter?.write(
             ExperimentManifest(
@@ -68,9 +79,16 @@ object VacuumBacktestRunner {
                     "DEPTH_DROP_PCT" to (System.getenv("DEPTH_DROP_PCT") ?: ""),
                     "SPREAD_WIDEN_PCT" to (System.getenv("SPREAD_WIDEN_PCT") ?: "")
                 ).filterValues { it.isNotBlank() },
-                reportPath = null,
+                reportPath = telemetryPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
+            )
+        )
+        GistUploader.installUploadOnShutdown(
+            label = "vacuum_backtest",
+            files = listOfNotNull(
+                telemetryPath?.let { File(it) },
+                manifestWriter?.path()?.let { File(it) }
             )
         )
 
@@ -79,7 +97,7 @@ object VacuumBacktestRunner {
         replayer.stream().collect { state ->
             if (!matchesSymbol(state.symbol, config.symbol)) return@collect
             gateway.onMarketState(state)
-            strategy.onMarketState(state)
+            engine.onMarketState(state)
             kpi.onMarketState(state.symbol, state.midPrice ?: state.microPrice, state.timestampMs)
             ticks++
             val now = state.eventTimeMs ?: state.timestampMs
@@ -92,21 +110,20 @@ object VacuumBacktestRunner {
                 lastKpiMs = now
             }
         }
-        VacuumReport.print(kpi.summary(), "VACUUM BACKTEST KPI")
+        val finalSummary = kpi.summary()
+        VacuumReport.print(finalSummary, "VACUUM BACKTEST KPI")
+        writeVacuumSummary(
+            config = config,
+            summary = finalSummary,
+            telemetryPath = telemetryPath,
+            manifestPath = manifestWriter?.path(),
+            mode = "backtest"
+        )
     }
 
     private fun defaultMarketStatePath(): String {
         val root = findProjectRoot()
         return File(root, "marketstate.csv").absolutePath
-    }
-
-    private fun findProjectRoot(): File {
-        var dir = File(System.getProperty("user.dir"))
-        while (true) {
-            if (File(dir, "settings.gradle.kts").exists()) return dir
-            val parent = dir.parentFile ?: return dir
-            dir = parent
-        }
     }
 
     private fun matchesSymbol(stateSymbol: String, target: String): Boolean {
@@ -147,5 +164,58 @@ object VacuumBacktestRunner {
             pauseMs = System.getenv("PAUSE_MS")?.toLongOrNull() ?: base.pauseMs,
             logSignals = System.getenv("LOG_SIGNALS")?.toBooleanStrictOrNull() ?: base.logSignals
         )
+    }
+
+    private fun writeVacuumSummary(
+        config: VacuumConfig,
+        summary: VacuumKpiSummary,
+        telemetryPath: String?,
+        manifestPath: String?,
+        mode: String
+    ) {
+        val configs = mapOf(
+            "symbol" to config.symbol,
+            "depth_drop_pct" to config.depthDropPct.toString(),
+            "spread_widen_pct" to config.spreadWidenPct.toString(),
+            "max_hold_ms" to config.maxHoldMs.toString()
+        ).filterValues { it.isNotBlank() }
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "vacuum",
+                mode = mode,
+                timestampMs = System.currentTimeMillis(),
+                configs = configs,
+                metrics = mapOf(
+                    "avg_slippage_bps" to summary.avgSlippageBps,
+                    "avg_adverse_move_bps" to summary.avgAdverseMoveBps,
+                    "tail_loss_count" to summary.tailLossCount
+                ),
+                health = mapOf(
+                    "last_slippage_bps" to summary.lastSlippageBps,
+                    "cancel_rate" to summary.cancelRate,
+                    "stale_cancel_rate" to summary.staleCancelRate
+                ),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
+    }
+
+    private fun findProjectRoot(): File {
+        var dir = File(System.getProperty("user.dir"))
+        while (true) {
+            if (File(dir, "settings.gradle.kts").exists()) return dir
+            val parent = dir.parentFile ?: return dir
+            dir = parent
+        }
     }
 }

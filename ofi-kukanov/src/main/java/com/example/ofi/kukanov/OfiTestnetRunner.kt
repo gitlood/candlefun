@@ -12,21 +12,32 @@ import com.example.execution.domain.ExecutionGateway
 import com.example.execution.impl.EnvExecutionCredentialsProvider
 import com.example.execution.impl.FillRecord
 import com.example.execution.impl.di.executionImplModule
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
 import com.example.network.BinanceUniverse
 import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
+import com.example.network.futures.helper.FuturesUserStreamTelemetry
 import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
 import com.example.network.futures.interfaces.FuturesExchangeInfoService
+import com.example.network.futures.interfaces.FuturesUserDataService
+import com.example.network.futures.interfaces.FuturesWebSocketService
 import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
+import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
@@ -38,7 +49,7 @@ import kotlin.time.Duration.Companion.milliseconds
 object OfiTestnetRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("ofi_testnet")
+        Telemetry.configureFromEnv("ofi_testnet", defaultEnabled = true)
         val credsProvider = EnvExecutionCredentialsProvider()
         try {
             credsProvider.testnet()
@@ -146,14 +157,16 @@ object OfiTestnetRunner {
             val gateway = InventoryPositionGateway(baseGateway, inventoryRepo)
 
             val ofiConfig = kukanovConfigFromEnv()
-            val strategies = liveSymbols.associateWith { symbol ->
-                OfiKukanovStrategy(
-                    gateway,
+            val strategies = liveSymbols.map { symbol ->
+                OfiKukanovIntentStrategy(
                     config = strategyConfigFromEnv(symbol),
-                    signalConfig = ofiConfig,
-                    kpiSink = kpiTracker
+                    signalConfig = ofiConfig
                 )
             }
+            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val policy = ExecutionPolicy(gateway)
+            val engine = PortfolioEngine(gateway, allocator, policy, strategies)
+            val telemetryPath = Telemetry.resolveReportPathFromEnv("ofi_testnet", defaultEnabled = true)
             val manifestWriter = ExperimentManifestWriter.fromEnv()
             manifestWriter?.write(
                 ExperimentManifest(
@@ -169,9 +182,16 @@ object OfiTestnetRunner {
                         "ORDER_STYLE" to (System.getenv("ORDER_STYLE") ?: ""),
                         "LEVERAGE" to (System.getenv("LEVERAGE") ?: "")
                     ).filterValues { it.isNotBlank() },
-                    reportPath = null,
+                    reportPath = telemetryPath,
                     runId = System.getenv("RUN_ID"),
                     notes = System.getenv("RUN_NOTES")
+                )
+            )
+            GistUploader.installUploadOnShutdown(
+                label = "ofi_testnet",
+                files = listOfNotNull(
+                    telemetryPath?.let { File(it) },
+                    manifestWriter?.path()?.let { File(it) }
                 )
             )
 
@@ -185,11 +205,15 @@ object OfiTestnetRunner {
             val lastFillTime = mutableMapOf<String, Long>()
             val symbolList = liveSymbols.map { it.asSymbol() }
 
-            val flow: Flow<MarketState> = koin.get<FuturesMarketStateRepository>()
-                .streamMarketState(symbolList, config)
+            val futuresRepo = koin.get<FuturesMarketStateRepository>()
+            val userData = koin.get<FuturesUserDataService>()
+            val userWs = koin.get<FuturesWebSocketService>()
+            FuturesUserStreamTelemetry.start(this, userData, userWs)
+            val flow: Flow<MarketState> = futuresRepo.streamMarketState(symbolList, config)
 
-            flow.collect { state ->
-                strategies[state.symbol]?.onMarketState(state)
+            try {
+                flow.collect { state ->
+                    engine.onMarketState(state)
                 kpiTracker.onMarketState(
                     state.symbol,
                     state.midPrice ?: state.lastTradePrice,
@@ -240,6 +264,23 @@ object OfiTestnetRunner {
                     )
                     lastFillPoll = now
                 }
+            }
+            } finally {
+                val summary = kpiTracker.summary()
+                writeOfiTestnetSummary(
+                    symbols = liveSymbols,
+                    summary = summary,
+                    telemetryPath = telemetryPath,
+                    manifestPath = manifestWriter?.path(),
+                    configs = mapOf(
+                        "MARKETDATA_SOURCE" to source,
+                        "OFI_WINDOW_MS" to (System.getenv("OFI_WINDOW_MS") ?: ""),
+                        "OFI_ENTRY_THRESHOLD" to (System.getenv("OFI_ENTRY_THRESHOLD") ?: ""),
+                        "OFI_EXIT_THRESHOLD" to (System.getenv("OFI_EXIT_THRESHOLD") ?: ""),
+                        "ORDER_STYLE" to (System.getenv("ORDER_STYLE") ?: ""),
+                        "LEVERAGE" to (System.getenv("LEVERAGE") ?: "")
+                    )
+                )
             }
         } finally {
             stopKoin()
@@ -430,6 +471,62 @@ object OfiTestnetRunner {
             )
         )
     }
+
+    private fun writeOfiTestnetSummary(
+        symbols: List<String>,
+        summary: OfiKpiSummary,
+        telemetryPath: String?,
+        manifestPath: String?,
+        configs: Map<String, String>
+    ) {
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "ofi_kukanov",
+                mode = "testnet",
+                timestampMs = System.currentTimeMillis(),
+                configs = configs.filterValues { it.isNotBlank() },
+                metrics = mapOf(
+                    "net_pnl" to summary.netPnl,
+                    "realized_pnl" to summary.realizedPnl,
+                    "unrealized_pnl" to summary.unrealizedPnl,
+                    "total_fees" to summary.totalFees,
+                    "avg_slippage_bps" to summary.avgSlippageBps,
+                    "avg_join_edge_bps" to summary.avgJoinEdgeBps,
+                    "avg_adverse_bps" to summary.avgAdverseMoveBps,
+                    "avg_latency_ms" to summary.avgLatencyMs,
+                    "symbols" to symbols
+                ),
+                health = mapOf(
+                    "trade_count" to summary.tradeCount,
+                    "win_rate" to summary.winRate,
+                    "fill_rate" to summary.fillRate,
+                    "cancel_rate" to summary.cancelRate,
+                    "stale_cancel_rate" to summary.staleCancelRate,
+                    "take_rate" to summary.takeRate
+                ),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
+    }
+
+    private fun findProjectRoot(): File {
+        var dir = File(System.getProperty("user.dir"))
+        while (true) {
+            if (File(dir, "settings.gradle.kts").exists()) return dir
+            dir = dir.parentFile ?: return dir
+        }
+    }
+
 
     private suspend fun logPnlSummary(
         inventoryRepo: InventoryStateRepository,

@@ -10,17 +10,27 @@ import com.example.account.impl.inventory.CsvWalletStore
 import com.example.account.domain.AccountStateRepository
 import com.example.account.domain.Money
 import com.example.execution.domain.ExecutionGateway
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
 import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
+import com.example.network.futures.helper.FuturesUserStreamTelemetry
 import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
 import com.example.network.futures.interfaces.FuturesExchangeInfoService
 import com.example.network.futures.interfaces.FuturesSymbolFilters
+import com.example.network.futures.interfaces.FuturesUserDataService
+import com.example.network.futures.interfaces.FuturesWebSocketService
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -38,7 +48,7 @@ import java.math.BigDecimal
 object PairsTestnetRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("pairs_testnet")
+        Telemetry.configureFromEnv("pairs_testnet", defaultEnabled = true)
         val symbolA = System.getenv("SYMBOL_A") ?: "BTCUSDT"
         val symbolB = System.getenv("SYMBOL_B") ?: "ETHUSDT"
         val tickMs = System.getenv("TICK_MS")?.toLongOrNull() ?: 250L
@@ -117,7 +127,11 @@ object PairsTestnetRunner {
 
             val configPairs = configFromEnv(symbolA, symbolB, futuresFilters)
             val kpi = PairsKpiTracker(configPairs)
-            val strategy = PairsStrategy(gateway, configPairs, kpi)
+            val strategy = PairsIntentStrategy(config = configPairs)
+            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val policy = ExecutionPolicy(gateway)
+            val engine = PortfolioEngine(gateway, allocator, policy, listOf(strategy))
+            val telemetryPath = Telemetry.resolveReportPathFromEnv("pairs_testnet", defaultEnabled = true)
             val manifestWriter = ExperimentManifestWriter.fromEnv()
             manifestWriter?.write(
                 ExperimentManifest(
@@ -131,9 +145,16 @@ object PairsTestnetRunner {
                         "WINDOW_MS" to (System.getenv("WINDOW_MS") ?: ""),
                         "LEVERAGE" to leverage.toString()
                     ).filterValues { it.isNotBlank() },
-                    reportPath = null,
+                    reportPath = telemetryPath,
                     runId = System.getenv("RUN_ID"),
                     notes = System.getenv("RUN_NOTES")
+                )
+            )
+            GistUploader.installUploadOnShutdown(
+                label = "pairs_testnet",
+                files = listOfNotNull(
+                    telemetryPath?.let { File(it) },
+                    manifestWriter?.path()?.let { File(it) }
                 )
             )
 
@@ -159,10 +180,14 @@ object PairsTestnetRunner {
             var lastPnlMs = 0L
             var lastFillTotal = 0
             val symbolList = listOf(symbolA.asSymbol(), symbolB.asSymbol())
+            val userData = koin.get<FuturesUserDataService>()
+            val userWs = koin.get<FuturesWebSocketService>()
+            FuturesUserStreamTelemetry.start(this, userData, userWs)
             val flow: Flow<MarketState> = repo.streamMarketState(symbolList, config)
-            flow.collect { state ->
+            try {
+                flow.collect { state ->
                 if (state.symbol != symbolA && state.symbol != symbolB) return@collect
-                strategy.onMarketState(state)
+                engine.onMarketState(state)
                 inventoryRepo.applyMarkPrice(
                     Symbol.of(state.symbol),
                     Price.fromDouble(state.midPrice ?: state.lastTradePrice ?: return@collect),
@@ -185,6 +210,16 @@ object PairsTestnetRunner {
                     lastFillTotal = fillCounts.values.sum()
                     lastPnlMs = now
                 }
+            }
+            } finally {
+                val summary = kpi.summary()
+                writePairsTestnetSummary(
+                    config = configPairs,
+                    summary = summary,
+                    telemetryPath = telemetryPath,
+                    manifestPath = manifestWriter?.path(),
+                    mode = "testnet"
+                )
             }
         } finally {
             stopKoin()
@@ -374,5 +409,58 @@ object PairsTestnetRunner {
                 sumAbsQty
             )
         )
+    }
+
+    private fun writePairsTestnetSummary(
+        config: PairsConfig,
+        summary: PairsKpiSummary,
+        telemetryPath: String?,
+        manifestPath: String?,
+        mode: String
+    ) {
+        val configs = mapOf(
+            "symbol_a" to config.symbolA,
+            "symbol_b" to config.symbolB,
+            "window_ms" to config.windowMs.toString(),
+            "entry_z" to config.entryZ.toString(),
+            "exit_z" to config.exitZ.toString(),
+            "leverage" to (System.getenv("LEVERAGE") ?: "")
+        ).filterValues { it.isNotBlank() }
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "pairs",
+                mode = mode,
+                timestampMs = System.currentTimeMillis(),
+                configs = configs,
+                metrics = mapOf(
+                    "avg_half_life_ms" to summary.avgHalfLifeMs,
+                    "tail_events" to summary.tailEvents,
+                    "realized_pnl" to summary.realizedPnL,
+                    "total_fees" to summary.totalFees,
+                    "net_pnl" to summary.netPnL
+                ),
+                health = emptyMap(),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
+    }
+
+    private fun findProjectRoot(): File {
+        var dir = File(System.getProperty("user.dir"))
+        while (true) {
+            if (File(dir, "settings.gradle.kts").exists()) return dir
+            val parent = dir.parentFile ?: return dir
+            dir = parent
+        }
     }
 }

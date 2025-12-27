@@ -98,12 +98,17 @@ We measure success not just by PnL, but by:
 Avellaneda runners can emit per-symbol CSV snapshots for quick review and tuning.
 
 *   **Default path**: `reports/avellaneda/avellaneda_<mode>.csv` (`backtest`, `live`, `testnet`)
+*   **Gist sharing**: If you upload a report to a GitHub Gist, include the Gist URL in your notes.
 *   **Env knobs**:
     *   `REPORT_ENABLED` (default `true`)
     *   `REPORT_EVERY_MS` (default `60000`)
     *   `REPORT_DIR` (directory override)
     *   `REPORT_PATH` (file override)
     *   `AVELLANEDA_REPORT_PATH` (Avellaneda-specific file override)
+*   **Gist upload (optional)**:
+    *   `GIST_ENABLED=true` enables upload on shutdown.
+    *   `GIST_TOKEN` or `GITHUB_TOKEN` (token) and `GIST_ID` (target gist) are required.
+    *   `GIST_MAX_BYTES` caps each file (default `2000000`).
 
 ---
 *Built with ❤️ and Kotlin.*

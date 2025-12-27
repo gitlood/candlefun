@@ -19,6 +19,7 @@ data class OfiStrategyConfig(
     val minSpreadSamples: Int = 5,
     val minDepthNotional: Double? = null,
     val minDepthQty: Double? = null,
+    val entryEdgeMultiplier: Double = 1.0,
     val useTradeConfirm: Boolean = false,
     val minTradeCount1s: Int = 3,
     val minTradeImbalance1s: Double = 0.0,
@@ -43,6 +44,7 @@ data class OfiStrategyConfig(
         require(minSpreadSamples >= 1) { "minSpreadSamples must be >= 1" }
         require(minTradeCount1s >= 0) { "minTradeCount1s must be >= 0" }
         require(joinOffsetTicks >= 0) { "joinOffsetTicks must be >= 0" }
+        require(entryEdgeMultiplier > 0.0) { "entryEdgeMultiplier must be > 0" }
     }
 }
 

@@ -7,6 +7,7 @@ import com.example.execution.domain.ExecutionGateway
 import com.example.execution.domain.OrderCancelRequest
 import com.example.execution.domain.OrderRequest
 import com.example.execution.domain.TimeInForce
+import com.example.ofi.kukanov.util.RollingAverageWindow
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
@@ -366,36 +367,4 @@ data class OfiOrderMeta(
 interface OfiKpiSink {
     fun onOrderPlaced(meta: OfiOrderMeta)
     fun onOrderCanceled(orderId: Long, stale: Boolean)
-}
-
-private class RollingAverageWindow(windowMs: Long) {
-    private val windowMs = windowMs
-    private val samples = ArrayDeque<TimedSample>(128)
-    private var sum = 0.0
-
-    fun add(timestampMs: Long, value: Double) {
-        samples.addLast(TimedSample(timestampMs, value))
-        sum += value
-        trim(timestampMs)
-    }
-
-    fun mean(timestampMs: Long): Double? {
-        trim(timestampMs)
-        if (samples.isEmpty()) return null
-        return sum / samples.size
-    }
-
-    fun count(timestampMs: Long): Int {
-        trim(timestampMs)
-        return samples.size
-    }
-
-    private fun trim(nowMs: Long) {
-        while (samples.isNotEmpty() && samples.first().timestampMs < nowMs - windowMs) {
-            val sample = samples.removeFirst()
-            sum -= sample.value
-        }
-    }
-
-    private data class TimedSample(val timestampMs: Long, val value: Double)
 }

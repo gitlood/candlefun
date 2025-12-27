@@ -13,9 +13,16 @@ import com.example.avellaneda.metrics.AdverseSelectionTracker
 import com.example.avellaneda.metrics.FillStats
 import com.example.avellaneda.report.AvellanedaCsvReporter
 import com.example.avellaneda.report.AvellanedaReportRow
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -24,7 +31,7 @@ import kotlin.math.abs
 object AvellanedaMmBacktestRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("avellaneda_backtest")
+        Telemetry.configureFromEnv("avellaneda_backtest", defaultEnabled = true)
         val inputPath = args.getOrNull(0)
             ?: System.getenv("MARKETSTATE_CSV")
             ?: defaultMarketStatePath()
@@ -67,6 +74,7 @@ object AvellanedaMmBacktestRunner {
             println("ReportPath   : ${reporter.reportPath()}")
             println("ReportEveryMs: $reportEveryMs")
         }
+        val telemetryPath = Telemetry.resolveReportPathFromEnv("avellaneda_backtest", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
         val adverseProvider: (String) -> Double? = { symbol ->
             val adv = adverseTracker.snapshotBps(symbol)
@@ -88,7 +96,7 @@ object AvellanedaMmBacktestRunner {
             )
         }
         val symbols = resolveSymbols(inputPath, symbolArg, symbolsEnv, fastMode)
-        val strategies = symbols.associateWith { symbol ->
+        val strategies = symbols.map { symbol ->
             val base = AvellanedaMmConfig.default(symbol)
             val config = base.copy(
                 orderQty = System.getenv("ORDER_QTY")?.toDoubleOrNull() ?: base.orderQty,
@@ -124,8 +132,12 @@ object AvellanedaMmBacktestRunner {
             if (System.getenv("LOG_CONFIG")?.toBooleanStrictOrNull() == true) {
                 println("config[$symbol]=$config")
             }
-            AvellanedaMmStrategy(gateway, config, adverseProvider)
+            AvellanedaMmIntentStrategy(config = config, adverseBpsProvider = adverseProvider)
         }
+        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val policy = ExecutionPolicy(gateway)
+        val engine = PortfolioEngine(gateway, allocator, policy, strategies)
+        val reportPath = telemetryPath ?: reporter?.reportPath()
         manifestWriter?.write(
             ExperimentManifest(
                 timestampMs = System.currentTimeMillis(),
@@ -146,9 +158,17 @@ object AvellanedaMmBacktestRunner {
                     "MAKER_FEE_PCT" to makerFeePct.toString(),
                     "TAKER_FEE_PCT" to takerFeePct.toString()
                 ).filterValues { it.isNotBlank() },
-                reportPath = reporter?.reportPath(),
+                reportPath = reportPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
+            )
+        )
+        GistUploader.installUploadOnShutdown(
+            label = "avellaneda_backtest",
+            files = listOfNotNull(
+                telemetryPath?.let { File(it) },
+                reporter?.reportPath()?.let { File(it) },
+                manifestWriter?.path()?.let { File(it) }
             )
         )
 
@@ -158,9 +178,9 @@ object AvellanedaMmBacktestRunner {
         var lastReportLog = 0L
         val latestMid = mutableMapOf<String, Double>()
         replayer.stream().collect { state ->
-            if (state.symbol !in strategies) return@collect
+            if (state.symbol !in symbols) return@collect
             gateway.onMarketState(state)
-            strategies[state.symbol]?.onMarketState(state)
+            engine.onMarketState(state)
             val mid = state.midPrice ?: state.lastTradePrice
             if (mid != null) {
                 latestMid[state.symbol] = mid
@@ -212,6 +232,22 @@ object AvellanedaMmBacktestRunner {
 
         inventoryRepo.persist()
         println("finished ticks=$ticks")
+        val fillStats = computeFillStats(accountRepo.allFills(), makerFeePct)
+        writeAvellanedaSummary(
+            inputPath = inputPath,
+            symbols = symbols,
+            inventoryRepo = inventoryRepo,
+            accountRepo = accountRepo,
+            fillStats = fillStats,
+            adverseTracker = adverseTracker,
+            reporterPath = reporter?.reportPath(),
+            telemetryPath = telemetryPath,
+            fastMode = fastMode,
+            speedup = speedup,
+            reportEveryMs = reportEveryMs,
+            makerFeePct = makerFeePct,
+            takerFeePct = takerFeePct
+        )
     }
 
     private fun defaultMarketStatePath(): String {
@@ -409,6 +445,76 @@ object AvellanedaMmBacktestRunner {
             stats.record(notional, makerFeePct, 0.0, isMaker = true)
         }
         return stats
+    }
+
+    private suspend fun writeAvellanedaSummary(
+        inputPath: String,
+        symbols: List<String>,
+        inventoryRepo: CsvInventoryStateRepository,
+        accountRepo: SimAccountStateRepository,
+        fillStats: FillStats,
+        adverseTracker: AdverseSelectionTracker,
+        reporterPath: String?,
+        telemetryPath: String?,
+        fastMode: Boolean,
+        speedup: Double,
+        reportEveryMs: Long,
+        makerFeePct: Double,
+        takerFeePct: Double
+    ) {
+        val positions = inventoryRepo.getInventory()
+        val totalRealized = positions.sumOf { it.realizedPnl.value.toDouble() }
+        val totalUnrealized = positions.sumOf { it.unrealizedPnl.value.toDouble() }
+        val totalNet = totalRealized + totalUnrealized
+        val totalExposure = positions.sumOf { abs(it.quantity.value.toDouble() * it.avgPrice.value.toDouble()) }
+        val avgAdv = positions.mapNotNull { adverseTracker.snapshotBps(it.symbol.value).firstOrNull() }
+            .let { if (it.isEmpty()) null else it.average() }
+        val configs = mapOf(
+            "MARKETSTATE_CSV" to inputPath,
+            "SYMBOLS" to symbols.joinToString(","),
+            "FAST_MODE" to fastMode.toString(),
+            "REPLAY_SPEEDUP" to speedup.toString(),
+            "REPORT_EVERY_MS" to reportEveryMs.toString(),
+            "MAKER_FEE_PCT" to makerFeePct.toString(),
+            "TAKER_FEE_PCT" to takerFeePct.toString()
+        ).filterValues { it.isNotBlank() }
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "avellaneda",
+                mode = "backtest",
+                timestampMs = System.currentTimeMillis(),
+                configs = configs,
+                metrics = mapOf(
+                    "net" to totalNet,
+                    "realized" to totalRealized,
+                    "unrealized" to totalUnrealized,
+                    "exposure" to totalExposure,
+                    "maker_fills" to fillStats.makerCount,
+                    "taker_fills" to fillStats.takerCount,
+                    "total_fees" to fillStats.totalFees,
+                    "total_notional" to fillStats.totalNotional,
+                    "avg_adv_bps" to avgAdv
+                ),
+                health = mapOf(
+                    "positions" to positions.size,
+                    "total_qty" to positions.sumOf { it.quantity.value.toDouble() },
+                    "max_abs_qty" to positions.maxOfOrNull { abs(it.quantity.value.toDouble()) },
+                    "sum_abs_qty" to positions.sumOf { abs(it.quantity.value.toDouble()) },
+                    "fills_total" to accountRepo.totalFills()
+                ),
+                notes = mapOfNotNulls(
+                    "reporter_path" to reporterPath,
+                    "telemetry_path" to telemetryPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
     }
 
     private suspend fun buildReportRows(

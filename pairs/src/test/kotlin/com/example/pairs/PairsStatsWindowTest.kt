@@ -35,4 +35,13 @@ class PairsStatsWindowTest {
         assertEquals(1, window.size(200L))
         assertEquals(5.0, window.mean(200L))
     }
+
+    @Test
+    fun `spread window std is zero for constant values`() {
+        val window = SpreadWindow(windowMs = 1_000L)
+        window.add(0L, 2.0)
+        window.add(10L, 2.0)
+        window.add(20L, 2.0)
+        assertEquals(0.0, window.std(20L))
+    }
 }

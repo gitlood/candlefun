@@ -3,9 +3,16 @@ package com.example.pairs
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.impl.replay.MarketStateReplayer
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -13,7 +20,7 @@ import java.io.File
 object PairsBacktestRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("pairs_backtest")
+        Telemetry.configureFromEnv("pairs_backtest", defaultEnabled = true)
         val inputPath = args.getOrNull(0)
             ?: System.getenv("MARKETSTATE_CSV")
             ?: defaultMarketStatePath()
@@ -50,7 +57,11 @@ object PairsBacktestRunner {
             makerFeePct = makerFeePct,
             takerFeePct = takerFeePct
         )
-        val strategy = PairsStrategy(gateway, config, kpi)
+        val strategy = PairsIntentStrategy(config = config)
+        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val policy = ExecutionPolicy(gateway)
+        val engine = PortfolioEngine(gateway, allocator, policy, listOf(strategy))
+        val telemetryPath = Telemetry.resolveReportPathFromEnv("pairs_backtest", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
         manifestWriter?.write(
             ExperimentManifest(
@@ -64,9 +75,16 @@ object PairsBacktestRunner {
                     "ENTRY_Z" to (System.getenv("ENTRY_Z") ?: ""),
                     "EXIT_Z" to (System.getenv("EXIT_Z") ?: "")
                 ).filterValues { it.isNotBlank() },
-                reportPath = null,
+                reportPath = telemetryPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
+            )
+        )
+        GistUploader.installUploadOnShutdown(
+            label = "pairs_backtest",
+            files = listOfNotNull(
+                telemetryPath?.let { File(it) },
+                manifestWriter?.path()?.let { File(it) }
             )
         )
 
@@ -74,7 +92,7 @@ object PairsBacktestRunner {
         replayer.stream().collect { state ->
             if (state.symbol != symbolA && state.symbol != symbolB) return@collect
             gateway.onMarketState(state)
-            strategy.onMarketState(state)
+            engine.onMarketState(state)
             val now = state.eventTimeMs ?: state.timestampMs
             if (lastKpiMs == 0L) lastKpiMs = now
             if (now - lastKpiMs >= kpiEveryMs) {
@@ -82,7 +100,15 @@ object PairsBacktestRunner {
                 lastKpiMs = now
             }
         }
-        PairsReport.print(kpi.summary(), "PAIRS BACKTEST KPI")
+        val finalSummary = kpi.summary()
+        PairsReport.print(finalSummary, "PAIRS BACKTEST KPI")
+        writePairsSummary(
+            config = config,
+            summary = finalSummary,
+            telemetryPath = telemetryPath,
+            manifestPath = manifestWriter?.path(),
+            mode = "backtest"
+        )
     }
 
     private fun defaultMarketStatePath(): String {
@@ -119,5 +145,48 @@ object PairsBacktestRunner {
             tailZ = System.getenv("TAIL_Z")?.toDoubleOrNull() ?: base.tailZ,
             logSignals = System.getenv("LOG_SIGNALS")?.toBooleanStrictOrNull() ?: base.logSignals
         )
+    }
+
+    private fun writePairsSummary(
+        config: PairsConfig,
+        summary: PairsKpiSummary,
+        telemetryPath: String?,
+        manifestPath: String?,
+        mode: String
+    ) {
+        val configs = mapOf(
+            "symbol_a" to config.symbolA,
+            "symbol_b" to config.symbolB,
+            "window_ms" to config.windowMs.toString(),
+            "entry_z" to config.entryZ.toString(),
+            "exit_z" to config.exitZ.toString()
+        ).filterValues { it.isNotBlank() }
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "pairs",
+                mode = mode,
+                timestampMs = System.currentTimeMillis(),
+                configs = configs,
+                metrics = mapOf(
+                    "avg_half_life_ms" to summary.avgHalfLifeMs,
+                    "tail_events" to summary.tailEvents,
+                    "realized_pnl" to summary.realizedPnL,
+                    "total_fees" to summary.totalFees,
+                    "net_pnl" to summary.netPnL
+                ),
+                health = emptyMap(),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
     }
 }

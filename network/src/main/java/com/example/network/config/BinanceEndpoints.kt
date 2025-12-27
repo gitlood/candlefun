@@ -15,7 +15,7 @@ object BinanceEnvs {
         wsBase = "wss://testnet.binance.vision/stream" 
     )
     val USD_M_FUTURES = BinanceEndpoints(
-        restBase = "https://fapi.binance.com/fapi/v1",
+        restBase = "https://fapi.binance.com",
         wsBase = "wss://fstream.binance.com/stream"
     )
     val USD_M_FUTURES_TESTNET = BinanceEndpoints(

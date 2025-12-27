@@ -28,8 +28,12 @@ object Telemetry {
         }
     }
 
-    fun configureFromEnv(mode: String) {
-        configure(TelemetrySinks.fromEnv(mode))
+    fun configureFromEnv(mode: String, defaultEnabled: Boolean = false) {
+        configure(TelemetrySinks.fromEnv(mode, defaultEnabled))
+    }
+
+    fun resolveReportPathFromEnv(mode: String, defaultEnabled: Boolean = false): String? {
+        return TelemetrySinks.resolvePathFromEnv(mode, defaultEnabled)
     }
 
     fun emit(type: String, tsMs: Long, data: Map<String, Any?> = emptyMap()) {
@@ -81,25 +85,41 @@ class JsonlTelemetrySink(private val file: File) : TelemetrySink {
 }
 
 object TelemetrySinks {
-    fun fromEnv(mode: String): TelemetrySink {
-        val enabled = System.getenv("TELEMETRY_ENABLED")?.toBooleanStrictOrNull() ?: false
+    fun fromEnv(mode: String, defaultEnabled: Boolean = false): TelemetrySink {
+        val enabled = resolveEnabled(defaultEnabled)
         if (!enabled) return NoopTelemetrySink
         val truncate = System.getenv("TELEMETRY_TRUNCATE")?.toBooleanStrictOrNull() ?: false
         val timestamped = System.getenv("TELEMETRY_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
-        val path = System.getenv("TELEMETRY_PATH")
-            ?: run {
-                val dir = System.getenv("TELEMETRY_DIR")
-                if (!dir.isNullOrBlank()) {
-                    File(dir, reportFileName(mode, timestamped)).absolutePath
-                } else {
-                    defaultReportPath(mode, timestamped)
-                }
-            }
+        val path = resolvePath(mode, timestamped)
         val file = File(path)
         if (truncate && file.exists()) {
             file.delete()
         }
-        return JsonlTelemetrySink(file)
+        val baseSink = JsonlTelemetrySink(file)
+        val dedupeTypes = resolveDedupeTypes()
+        return if (dedupeTypes.isEmpty()) baseSink else DedupeTelemetrySink(baseSink, dedupeTypes)
+    }
+
+    fun resolvePathFromEnv(mode: String, defaultEnabled: Boolean = false): String? {
+        val enabled = resolveEnabled(defaultEnabled)
+        if (!enabled) return null
+        val timestamped = System.getenv("TELEMETRY_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
+        return resolvePath(mode, timestamped)
+    }
+
+    private fun resolveEnabled(defaultEnabled: Boolean): Boolean {
+        return System.getenv("TELEMETRY_ENABLED")?.toBooleanStrictOrNull() ?: defaultEnabled
+    }
+
+    private fun resolvePath(mode: String, timestamped: Boolean): String {
+        val explicitPath = System.getenv("TELEMETRY_PATH")
+        if (!explicitPath.isNullOrBlank()) return explicitPath
+        val dir = System.getenv("TELEMETRY_DIR")
+            ?: System.getenv("REPORT_DIR")
+        if (!dir.isNullOrBlank()) {
+            return File(dir, reportFileName(mode, timestamped)).absolutePath
+        }
+        return defaultReportPath(mode, timestamped)
     }
 
     private fun defaultReportPath(mode: String, timestamped: Boolean): String {
@@ -123,6 +143,37 @@ object TelemetrySinks {
             val parent = dir.parentFile ?: return dir
             dir = parent
         }
+    }
+
+    private fun resolveDedupeTypes(): Set<String> {
+        val raw = System.getenv("TELEMETRY_DEDUPE_TYPES") ?: "market_snapshot"
+        return raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+}
+
+class DedupeTelemetrySink(
+    private val delegate: TelemetrySink,
+    dedupeTypes: Set<String>
+) : TelemetrySink {
+    private val buffer = mutableMapOf<String, TelemetryEvent>()
+    private val types = dedupeTypes.map { it.trim() }.filter { it.isNotBlank() }.toSet()
+
+    override fun emit(event: TelemetryEvent) {
+        if (event.type in types) {
+            val symbolKey = event.data["symbol"]?.toString() ?: ""
+            buffer["${event.type}::$symbolKey"] = event
+            return
+        }
+        delegate.emit(event)
+    }
+
+    override fun close() {
+        buffer.values.forEach { delegate.emit(it) }
+        buffer.clear()
+        delegate.close()
     }
 }
 

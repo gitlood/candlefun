@@ -3,6 +3,10 @@ package com.example.vacuum
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
@@ -14,7 +18,9 @@ import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
 import com.example.platform.report.Telemetry
+import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
@@ -24,7 +30,7 @@ import kotlin.time.Duration.Companion.milliseconds
 object VacuumLiveRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("vacuum_live")
+        Telemetry.configureFromEnv("vacuum_live", defaultEnabled = true)
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "FUTURES").uppercase()
         val symbolsEnv = System.getenv("SYMBOLS")
         val topN = System.getenv("TOP_N")?.toIntOrNull() ?: 5
@@ -77,6 +83,7 @@ object VacuumLiveRunner {
             val kpiBySymbol = symbols.associateWith { symbol ->
                 VacuumKpiTracker(configFromEnv(symbol))
             }
+            val telemetryPath = Telemetry.resolveReportPathFromEnv("vacuum_live", defaultEnabled = true)
             val manifestWriter = ExperimentManifestWriter.fromEnv()
             manifestWriter?.write(
                 ExperimentManifest(
@@ -89,9 +96,16 @@ object VacuumLiveRunner {
                         "DEPTH_DROP_PCT" to (System.getenv("DEPTH_DROP_PCT") ?: ""),
                         "SPREAD_WIDEN_PCT" to (System.getenv("SPREAD_WIDEN_PCT") ?: "")
                     ).filterValues { it.isNotBlank() },
-                    reportPath = null,
+                    reportPath = telemetryPath,
                     runId = System.getenv("RUN_ID"),
                     notes = System.getenv("RUN_NOTES")
+                )
+            )
+            GistUploader.installUploadOnShutdown(
+                label = "vacuum_live",
+                files = listOfNotNull(
+                    telemetryPath?.let { File(it) },
+                    manifestWriter?.path()?.let { File(it) }
                 )
             )
             val accountRepo = SimAccountStateRepository()
@@ -113,10 +127,13 @@ object VacuumLiveRunner {
                 takerFeePct = takerFeePct,
                 fillListener = { fill -> kpiBySymbol[fill.symbol.value]?.onFill(fill) }
             )
-            val strategies = symbols.associateWith { symbol ->
+            val strategies = symbols.map { symbol ->
                 val kpi = kpiBySymbol[symbol] ?: error("KPI missing for $symbol")
-                VacuumStrategy(gateway, configFromEnv(symbol), kpi)
+                VacuumIntentStrategy(config = configFromEnv(symbol), kpi = kpi)
             }
+            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val policy = ExecutionPolicy(gateway)
+            val engine = PortfolioEngine(gateway, allocator, policy, strategies)
 
             var ticks = 0L
             var lastKpiMs = 0L
@@ -131,7 +148,7 @@ object VacuumLiveRunner {
 
             flow.collect { state ->
                 gateway.onMarketState(state)
-                strategies[state.symbol]?.onMarketState(state)
+                engine.onMarketState(state)
                 kpiBySymbol[state.symbol]?.onMarketState(
                     state.symbol,
                     state.midPrice ?: state.microPrice,

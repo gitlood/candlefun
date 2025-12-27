@@ -113,6 +113,7 @@ class IntentAllocator(
                 orderType = OrderType.MARKET,
                 preferMaker = topIntent.preferMaker,
                 maxSlippageBps = topIntent.maxSlippageBps,
+                ttlMs = topIntent.ttlMs,
                 clientOrderId = "NET-${summary.symbol}-${System.nanoTime()}"
             ).also { decision ->
                 Telemetry.emit(
@@ -124,6 +125,7 @@ class IntentAllocator(
                         "order_type" to decision.orderType.name,
                         "prefer_maker" to decision.preferMaker,
                         "max_slippage_bps" to decision.maxSlippageBps,
+                        "ttl_ms" to decision.ttlMs,
                         "client_order_id" to decision.clientOrderId
                     )
                 )

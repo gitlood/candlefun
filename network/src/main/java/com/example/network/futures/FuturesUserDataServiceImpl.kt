@@ -19,7 +19,7 @@ internal class FuturesUserDataServiceImpl(
     private data class ListenKeyDto(val listenKey: String)
 
     override suspend fun createListenKey(): String {
-        val url = "${endpoints.restBase}/listenKey"
+        val url = "${endpoints.restBase}/fapi/v1/listenKey"
         val dto: ListenKeyDto = client.postOrThrow(url) {
             header("X-MBX-APIKEY", apiKey)
         }
@@ -27,7 +27,7 @@ internal class FuturesUserDataServiceImpl(
     }
 
     override suspend fun keepAliveListenKey(listenKey: String) {
-        val url = "${endpoints.restBase}/listenKey"
+        val url = "${endpoints.restBase}/fapi/v1/listenKey"
         client.put(url) {
             header("X-MBX-APIKEY", apiKey)
             url {
@@ -37,7 +37,7 @@ internal class FuturesUserDataServiceImpl(
     }
 
     override suspend fun closeListenKey(listenKey: String) {
-        val url = "${endpoints.restBase}/listenKey"
+        val url = "${endpoints.restBase}/fapi/v1/listenKey"
         client.delete(url) {
             header("X-MBX-APIKEY", apiKey)
             url {

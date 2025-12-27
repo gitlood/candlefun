@@ -30,7 +30,29 @@ import java.util.Properties
 import org.koin.dsl.module
 
 val futuresModule = module {
-    single { FuturesEndpoints.usdM() }
+    val testnetApiKey = envOrLocalProperty(
+        "BINANCE_FUTURES_TESTNET_API_KEY",
+        "BINANCE_TESTNET_API_KEY",
+        "BINANCE_TEST_KEY"
+    )
+    val isTestnet = testnetApiKey != null
+    val customRest = envOrLocalProperty("BINANCE_FUTURES_REST_BASE")
+    val customWs = envOrLocalProperty("BINANCE_FUTURES_WS_BASE")
+    val endpoints = when {
+        !customRest.isNullOrBlank() -> {
+            val wsValue = customWs?.takeIf { it.isNotBlank() }
+                ?: FuturesEndpoints.deduced(customRest)
+                ?: (if (customRest.startsWith("https://")) {
+                    customRest.replaceFirst("https://", "wss://").trimEnd('/') + "/stream"
+                } else {
+                    customRest
+                })
+            FuturesEndpoints.custom(customRest, wsValue)
+        }
+        isTestnet -> FuturesEndpoints.usdMTest()
+        else -> FuturesEndpoints.usdM()
+    }
+    single { endpoints }
     single<FuturesExchangeInfoService> { FuturesExchangeInfoServiceImpl(get(), BinanceEnvs.USD_M_FUTURES_TESTNET) }
 
     single<FuturesWebSocketService> { FuturesWebSocketServiceImpl(get(), get()) }
@@ -44,8 +66,14 @@ val futuresModule = module {
     single<FuturesMarketStateRepository> { FuturesMarketStateRepositoryImpl(get(), get(), get(), get()) }
 
     factory<FuturesUserDataService> {
-        val apiKey = System.getenv("BINANCE_FUTURES_API_KEY")
-            ?: error("BINANCE_FUTURES_API_KEY is required for futures user data stream")
+        val mainnetKey = envOrLocalProperty("BINANCE_FUTURES_API_KEY", "BINANCE_KEY")
+        val apiKey = if (isTestnet) {
+            testnetApiKey
+                ?: error("Testnet API key is required for futures user data stream")
+        } else {
+            mainnetKey
+                ?: error("BINANCE_FUTURES_API_KEY (or BINANCE_KEY) is required for futures user data stream")
+        }
         FuturesUserDataServiceImpl(get(), get(), apiKey)
     }
 

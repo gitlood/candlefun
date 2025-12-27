@@ -6,12 +6,21 @@ import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
 import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
+import com.example.network.futures.helper.FuturesUserStreamTelemetry
 import com.example.network.futures.interfaces.BinanceFuturesTestNetApiService
 import com.example.network.futures.interfaces.FuturesMarketDataService
+import com.example.network.futures.interfaces.FuturesUserDataService
+import com.example.network.futures.interfaces.FuturesWebSocketService
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -29,7 +38,7 @@ import java.io.File
 object SurvivorTestnetRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("survivor_testnet")
+        Telemetry.configureFromEnv("survivor_testnet", defaultEnabled = true)
         val symbol = System.getenv("SYMBOL") ?: "BTCUSDT"
         val tickMs = System.getenv("TICK_MS")?.toLongOrNull() ?: 1_000L
         val depthLevels = System.getenv("DEPTH_LEVELS")?.toIntOrNull() ?: 5
@@ -54,9 +63,10 @@ object SurvivorTestnetRunner {
         println("PollMs       : $pollMs")
         println("PosPollMs    : $positionPollMs")
         println("Leverage     : $leverage")
+        var recordOutputPath: String? = null
         if (recordEnabled) {
-            val resolved = applyTimestamp(recordPath, recordTimestamped)
-            println("RecordCsv    : $resolved everyMs=$recordEveryMs truncate=$recordTruncate")
+            recordOutputPath = applyTimestamp(recordPath, recordTimestamped)
+            println("RecordCsv    : $recordOutputPath everyMs=$recordEveryMs truncate=$recordTruncate")
         }
 
         val koinApp = startKoin {
@@ -85,10 +95,12 @@ object SurvivorTestnetRunner {
 
             val survivorConfig = configFromEnv(symbol)
             val kpi = SurvivorKpiTracker(survivorConfig)
-            val gates = SurvivorGateStats()
-            val strategy = SurvivorStrategy(gateway, survivorConfig, kpi, gates)
+            val strategy = SurvivorIntentStrategy(survivorConfig)
+            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val policy = ExecutionPolicy(gateway)
+            val engine = SurvivorPortfolioEngine(gateway, allocator, policy, strategy)
             val recorder = if (recordEnabled) {
-                val resolved = applyTimestamp(recordPath, recordTimestamped)
+                val resolved = recordOutputPath ?: applyTimestamp(recordPath, recordTimestamped)
                 val outFile = File(resolved)
                 if (recordTruncate && outFile.exists()) {
                     outFile.delete()
@@ -97,6 +109,7 @@ object SurvivorTestnetRunner {
             } else {
                 null
             }
+            val telemetryPath = Telemetry.resolveReportPathFromEnv("survivor_testnet", defaultEnabled = true)
             val manifestWriter = ExperimentManifestWriter.fromEnv()
             manifestWriter?.write(
                 ExperimentManifest(
@@ -113,9 +126,17 @@ object SurvivorTestnetRunner {
                         "MAX_SPREAD_PCT" to (System.getenv("MAX_SPREAD_PCT") ?: ""),
                         "LEVERAGE" to leverage.toString()
                     ).filterValues { it.isNotBlank() },
-                    reportPath = null,
+                    reportPath = telemetryPath,
                     runId = System.getenv("RUN_ID"),
                     notes = System.getenv("RUN_NOTES")
+                )
+            )
+            GistUploader.installUploadOnShutdown(
+                label = "survivor_testnet",
+                files = listOfNotNull(
+                    telemetryPath?.let { File(it) },
+                    recordOutputPath?.let { File(it) },
+                    manifestWriter?.path()?.let { File(it) }
                 )
             )
 
@@ -136,40 +157,103 @@ object SurvivorTestnetRunner {
                         )
                         dataMutex.withLock { latestPremium = snap }
                     } catch (e: Exception) {
-                        println("Premium/OI poll failed: ${e.message}")
-                    }
-                    delay(pollMs)
-                }
+            println("Premium/OI poll failed: ${e.message}")
             }
-
+            delay(pollMs)
+            }
+        }
             var lastKpiMs = 0L
             var lastPosPollMs = 0L
+            val userData = koin.get<FuturesUserDataService>()
+            val userWs = koin.get<FuturesWebSocketService>()
+            FuturesUserStreamTelemetry.start(this, userData, userWs)
             val flow: Flow<MarketState> = repo.streamMarketState(listOf(symbol.asSymbol()), config)
-            flow.collect { state ->
-                val premium = dataMutex.withLock { latestPremium }
-                if (premium == null) return@collect
-                val snapshot = buildSnapshot(symbol, state, premium)
-                strategy.onSnapshot(snapshot)
-                recorder?.record(snapshot)
+            try {
+                flow.collect { state ->
+                    val premium = dataMutex.withLock { latestPremium }
+                    if (premium == null) return@collect
+                    val snapshot = buildSnapshot(symbol, state, premium)
+                    engine.onSnapshot(snapshot)
+                    recorder?.record(snapshot)
 
-                val now = snapshot.timestampMs
-                if (now - lastPosPollMs >= positionPollMs) {
-                    val pos = gateway.getPositions().firstOrNull { it.symbol.value == symbol }
-                    if (pos != null) {
-                        kpi.onPositionUpdate(symbol, pos.quantity.value.toDouble(), pos.averagePrice.value.toDouble())
+                    val now = snapshot.timestampMs
+                    if (now - lastPosPollMs >= positionPollMs) {
+                        val pos = gateway.getPositions().firstOrNull { it.symbol.value == symbol }
+                        if (pos != null) {
+                            kpi.onPositionUpdate(symbol, pos.quantity.value.toDouble(), pos.averagePrice.value.toDouble())
+                        }
+                        lastPosPollMs = now
                     }
-                    lastPosPollMs = now
+                    if (lastKpiMs == 0L) lastKpiMs = now
+                    if (now - lastKpiMs >= logEveryMs) {
+                        SurvivorReport.print(kpi.summary(), "SURVIVOR TESTNET KPI")
+                        lastKpiMs = now
+                    }
                 }
-                if (lastKpiMs == 0L) lastKpiMs = now
-                if (now - lastKpiMs >= logEveryMs) {
-                    SurvivorReport.print(kpi.summary(), "SURVIVOR TESTNET KPI")
-                    println(gates.report())
-                    lastKpiMs = now
-                }
+            } finally {
+                val summary = kpi.summary()
+                SurvivorReport.print(summary, "SURVIVOR TESTNET KPI")
+                writeSurvivorTestnetSummary(
+                    config = survivorConfig,
+                    summary = summary,
+                    telemetryPath = telemetryPath,
+                    manifestPath = manifestWriter?.path(),
+                    recordPath = recordOutputPath,
+                    mode = "testnet"
+                )
             }
         } finally {
             stopKoin()
         }
+    }
+
+    private fun writeSurvivorTestnetSummary(
+        config: SurvivorConfig,
+        summary: SurvivorKpiSummary,
+        telemetryPath: String?,
+        manifestPath: String?,
+        recordPath: String?,
+        mode: String
+    ) {
+        val configs = mapOf(
+            "symbol" to config.symbol,
+            "order_qty" to config.orderQty.toString(),
+            "entry_funding_threshold" to config.entryFundingThreshold.toString(),
+            "exit_funding_threshold" to config.exitFundingThreshold.toString(),
+            "basis_stop_pct" to config.basisStopAbsPct.toString()
+        ).filterValues { it.isNotBlank() }
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "survivor",
+                mode = mode,
+                timestampMs = System.currentTimeMillis(),
+                configs = configs,
+                metrics = mapOf(
+                    "net_carry" to summary.netCarry,
+                    "realized_funding" to summary.realizedFunding,
+                    "realized_fees" to summary.realizedFees,
+                    "borrow_costs" to summary.borrowCosts,
+                    "expected_carry" to summary.expectedCarry,
+                    "worst_basis_abs_pct" to summary.worstBasisAbsPct
+                ),
+                health = mapOf(
+                    "cancel_rate" to summary.cancelRate,
+                    "stale_cancel_rate" to summary.staleCancelRate
+                ),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "record_path" to recordPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
     }
 
     private fun buildSnapshot(

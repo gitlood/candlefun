@@ -8,10 +8,17 @@ import com.example.account.impl.inventory.CsvWalletStore
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.impl.replay.MarketStateReplayer
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
 import com.example.platform.report.HealthSummary
+import com.example.platform.report.RunSummary
+import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration.Companion.milliseconds
@@ -20,7 +27,7 @@ import java.io.File
 object OfiBacktestRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("ofi_backtest")
+        Telemetry.configureFromEnv("ofi_backtest", defaultEnabled = true)
         val inputPath = args.getOrNull(0)
             ?: System.getenv("MARKETSTATE_CSV")
             ?: defaultMarketStatePath()
@@ -69,14 +76,16 @@ object OfiBacktestRunner {
 
         val symbols = resolveSymbols(inputPath, symbolArg, symbolsEnv, fastMode)
         val ofiConfig = kukanovConfigFromEnv()
-        val strategies = symbols.associateWith { symbol ->
-            OfiKukanovStrategy(
-                gateway,
+        val strategies = symbols.map { symbol ->
+            OfiKukanovIntentStrategy(
                 config = strategyConfigFromEnv(symbol),
-                signalConfig = ofiConfig,
-                kpiSink = kpiTracker
+                signalConfig = ofiConfig
             )
         }
+        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val policy = ExecutionPolicy(gateway)
+        val engine = PortfolioEngine(gateway, allocator, policy, strategies)
+        val telemetryPath = Telemetry.resolveReportPathFromEnv("ofi_backtest", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
         manifestWriter?.write(
             ExperimentManifest(
@@ -92,18 +101,25 @@ object OfiBacktestRunner {
                     "OFI_EXIT_THRESHOLD" to (System.getenv("OFI_EXIT_THRESHOLD") ?: ""),
                     "ORDER_STYLE" to (System.getenv("ORDER_STYLE") ?: "")
                 ).filterValues { it.isNotBlank() },
-                reportPath = null,
+                reportPath = telemetryPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
+            )
+        )
+        GistUploader.installUploadOnShutdown(
+            label = "ofi_backtest",
+            files = listOfNotNull(
+                telemetryPath?.let { File(it) },
+                manifestWriter?.path()?.let { File(it) }
             )
         )
 
         var ticks = 0L
         var lastKpiLogMs = 0L
         replayer.stream().collect { state ->
-            if (state.symbol !in strategies) return@collect
+            if (symbols.contains(state.symbol).not()) return@collect
             gateway.onMarketState(state)
-            strategies[state.symbol]?.onMarketState(state)
+            engine.onMarketState(state)
             kpiTracker.onMarketState(
                 state.symbol,
                 state.midPrice ?: state.lastTradePrice,
@@ -130,6 +146,22 @@ object OfiBacktestRunner {
 
         inventoryRepo.persist()
         println("finished ticks=$ticks")
+        val finalSummary = kpiTracker.summary()
+        writeOfiSummary(
+            symbols = symbols,
+            summary = finalSummary,
+            mode = "backtest",
+            telemetryPath = telemetryPath,
+            manifestPath = manifestWriter?.path(),
+            configs = mapOf(
+                "MARKETSTATE_CSV" to inputPath,
+                "REPLAY_SPEEDUP" to speedup.toString(),
+                "OFI_WINDOW_MS" to (System.getenv("OFI_WINDOW_MS") ?: ""),
+                "OFI_ENTRY_THRESHOLD" to (System.getenv("OFI_ENTRY_THRESHOLD") ?: ""),
+                "OFI_EXIT_THRESHOLD" to (System.getenv("OFI_EXIT_THRESHOLD") ?: ""),
+                "ORDER_STYLE" to (System.getenv("ORDER_STYLE") ?: "")
+            )
+        )
     }
 
     private fun defaultMarketStatePath(): String {
@@ -286,5 +318,53 @@ object OfiBacktestRunner {
                 )
             )
         )
+    }
+
+    private fun writeOfiSummary(
+        symbols: List<String>,
+        summary: OfiKpiSummary,
+        mode: String,
+        telemetryPath: String?,
+        manifestPath: String?,
+        configs: Map<String, String>
+    ) {
+        RunSummaryWriter.writeSummary(
+            root = findProjectRoot(),
+            summary = RunSummary(
+                strategy = "ofi_kukanov",
+                mode = mode,
+                timestampMs = System.currentTimeMillis(),
+                configs = configs.filterValues { it.isNotBlank() },
+                metrics = mapOf(
+                    "net_pnl" to summary.netPnl,
+                    "realized_pnl" to summary.realizedPnl,
+                    "unrealized_pnl" to summary.unrealizedPnl,
+                    "total_fees" to summary.totalFees,
+                    "avg_slippage_bps" to summary.avgSlippageBps,
+                    "avg_join_edge_bps" to summary.avgJoinEdgeBps,
+                    "avg_adverse_bps" to summary.avgAdverseMoveBps,
+                    "avg_latency_ms" to summary.avgLatencyMs,
+                    "symbols" to symbols
+                ),
+                health = mapOf(
+                    "trade_count" to summary.tradeCount,
+                    "win_rate" to summary.winRate,
+                    "fill_rate" to summary.fillRate,
+                    "cancel_rate" to summary.cancelRate,
+                    "stale_cancel_rate" to summary.staleCancelRate,
+                    "take_rate" to summary.takeRate
+                ),
+                notes = mapOfNotNulls(
+                    "telemetry_path" to telemetryPath,
+                    "manifest_path" to manifestPath,
+                    "run_id" to System.getenv("RUN_ID"),
+                    "run_notes" to System.getenv("RUN_NOTES")
+                )
+            )
+        )
+    }
+
+    private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
+        return pairs.mapNotNull { (k, v) -> v?.let { k to it } }.toMap()
     }
 }

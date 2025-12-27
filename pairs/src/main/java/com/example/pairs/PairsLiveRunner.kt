@@ -3,6 +3,10 @@ package com.example.pairs
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
@@ -12,7 +16,9 @@ import com.example.network.futures.di.futuresModule
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
 import com.example.platform.report.Telemetry
+import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
@@ -22,7 +28,7 @@ import kotlin.time.Duration.Companion.milliseconds
 object PairsLiveRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("pairs_live")
+        Telemetry.configureFromEnv("pairs_live", defaultEnabled = true)
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "FUTURES").uppercase()
         val symbolA = System.getenv("SYMBOL_A") ?: "BTCUSDT"
         val symbolB = System.getenv("SYMBOL_B") ?: "ETHUSDT"
@@ -77,7 +83,11 @@ object PairsLiveRunner {
                 makerFeePct = makerFeePct,
                 takerFeePct = takerFeePct
             )
-            val strategy = PairsStrategy(gateway, configPairs, kpi)
+            val strategy = PairsIntentStrategy(config = configPairs)
+            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val policy = ExecutionPolicy(gateway)
+            val engine = PortfolioEngine(gateway, allocator, policy, listOf(strategy))
+            val telemetryPath = Telemetry.resolveReportPathFromEnv("pairs_live", defaultEnabled = true)
             val manifestWriter = ExperimentManifestWriter.fromEnv()
             manifestWriter?.write(
                 ExperimentManifest(
@@ -91,9 +101,16 @@ object PairsLiveRunner {
                         "EXIT_Z" to (System.getenv("EXIT_Z") ?: ""),
                         "WINDOW_MS" to (System.getenv("WINDOW_MS") ?: "")
                     ).filterValues { it.isNotBlank() },
-                    reportPath = null,
+                    reportPath = telemetryPath,
                     runId = System.getenv("RUN_ID"),
                     notes = System.getenv("RUN_NOTES")
+                )
+            )
+            GistUploader.installUploadOnShutdown(
+                label = "pairs_live",
+                files = listOfNotNull(
+                    telemetryPath?.let { File(it) },
+                    manifestWriter?.path()?.let { File(it) }
                 )
             )
 
@@ -110,7 +127,7 @@ object PairsLiveRunner {
             flow.collect { state ->
                 if (state.symbol != symbolA && state.symbol != symbolB) return@collect
                 gateway.onMarketState(state)
-                strategy.onMarketState(state)
+                engine.onMarketState(state)
                 val now = state.eventTimeMs ?: state.timestampMs
                 if (lastKpiMs == 0L) lastKpiMs = now
                 if (now - lastKpiMs >= kpiEveryMs) {

@@ -8,6 +8,10 @@ import com.example.account.impl.inventory.CsvWalletStore
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
+import com.example.execution.domain.RiskBudget
+import com.example.execution.impl.ExecutionPolicy
+import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.PortfolioEngine
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
@@ -19,18 +23,20 @@ import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
+import com.example.platform.report.GistUploader
 import com.example.platform.report.HealthSummary
 import com.example.platform.report.Telemetry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
+import java.io.File
 import kotlin.time.Duration.Companion.milliseconds
 
 object OfiLiveRunner {
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("ofi_live")
+        Telemetry.configureFromEnv("ofi_live", defaultEnabled = true)
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "FUTURES").uppercase()
         val symbolsEnv = System.getenv("SYMBOLS")
         val topN = System.getenv("TOP_N")?.toIntOrNull() ?: 25
@@ -107,14 +113,16 @@ object OfiLiveRunner {
             )
 
             val ofiConfig = kukanovConfigFromEnv()
-            val strategies = symbols.associateWith { symbol ->
-                OfiKukanovStrategy(
-                    gateway,
+            val strategies = symbols.map { symbol ->
+                OfiKukanovIntentStrategy(
                     config = strategyConfigFromEnv(symbol),
-                    signalConfig = ofiConfig,
-                    kpiSink = kpiTracker
+                    signalConfig = ofiConfig
                 )
             }
+            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val policy = ExecutionPolicy(gateway)
+            val engine = PortfolioEngine(gateway, allocator, policy, strategies)
+            val telemetryPath = Telemetry.resolveReportPathFromEnv("ofi_live", defaultEnabled = true)
             val manifestWriter = ExperimentManifestWriter.fromEnv()
             manifestWriter?.write(
                 ExperimentManifest(
@@ -129,9 +137,16 @@ object OfiLiveRunner {
                         "OFI_EXIT_THRESHOLD" to (System.getenv("OFI_EXIT_THRESHOLD") ?: ""),
                         "ORDER_STYLE" to (System.getenv("ORDER_STYLE") ?: "")
                     ).filterValues { it.isNotBlank() },
-                    reportPath = null,
+                    reportPath = telemetryPath,
                     runId = System.getenv("RUN_ID"),
                     notes = System.getenv("RUN_NOTES")
+                )
+            )
+            GistUploader.installUploadOnShutdown(
+                label = "ofi_live",
+                files = listOfNotNull(
+                    telemetryPath?.let { File(it) },
+                    manifestWriter?.path()?.let { File(it) }
                 )
             )
 
@@ -149,7 +164,7 @@ object OfiLiveRunner {
 
             flow.collect { state ->
                 gateway.onMarketState(state)
-                strategies[state.symbol]?.onMarketState(state)
+                engine.onMarketState(state)
                 kpiTracker.onMarketState(
                     state.symbol,
                     state.midPrice ?: state.lastTradePrice,

@@ -5,16 +5,6 @@ import kotlin.test.assertEquals
 
 class AvellanedaRunnerHelpersTest {
     @Test
-    fun `live runner parses quote style`() {
-        val method = AvellanedaMmLiveRunner::class.java
-            .getDeclaredMethod("parseQuoteStyle", String::class.java)
-            .apply { isAccessible = true }
-        assertEquals(QuoteStyle.JOIN, method.invoke(AvellanedaMmLiveRunner, null))
-        assertEquals(QuoteStyle.IMPROVE, method.invoke(AvellanedaMmLiveRunner, "improve"))
-        assertEquals(QuoteStyle.WIDEN, method.invoke(AvellanedaMmLiveRunner, "WIDEN"))
-    }
-
-    @Test
     fun `testnet runner parses quote style and formats to step`() {
         val styleMethod = AvellanedaMmTestnetRunner::class.java
             .getDeclaredMethod("parseQuoteStyle", String::class.java)

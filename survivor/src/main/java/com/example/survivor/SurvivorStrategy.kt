@@ -10,6 +10,7 @@ import com.example.execution.domain.TimeInForce
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
 import com.example.platform.report.Telemetry
+import com.example.survivor.util.RollingOiWindow
 import kotlin.math.abs
 
 class SurvivorStrategy(
@@ -224,33 +225,4 @@ class SurvivorStrategy(
         activeOrderId = null
         activeOrderMs = null
     }
-}
-
-private class RollingOiWindow(windowMs: Long) {
-    private val windowMs = windowMs
-    private val samples = ArrayDeque<TimedOi>(64)
-    private var sum = 0.0
-
-    fun add(timestampMs: Long, oi: Double) {
-        samples.addLast(TimedOi(timestampMs, oi))
-        sum += oi
-        trim(timestampMs)
-    }
-
-    fun isJumping(current: Double, maxJumpPct: Double): Boolean {
-        if (samples.isEmpty()) return false
-        val mean = sum / samples.size
-        if (mean <= 0.0) return false
-        val pct = abs(current - mean) / mean
-        return pct > maxJumpPct
-    }
-
-    private fun trim(nowMs: Long) {
-        while (samples.isNotEmpty() && samples.first().timestampMs < nowMs - windowMs) {
-            val s = samples.removeFirst()
-            sum -= s.oi
-        }
-    }
-
-    private data class TimedOi(val timestampMs: Long, val oi: Double)
 }

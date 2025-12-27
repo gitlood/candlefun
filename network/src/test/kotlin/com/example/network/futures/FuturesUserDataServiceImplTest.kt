@@ -25,7 +25,7 @@ class FuturesUserDataServiceImplTest {
     fun `createListenKey posts with api key`() = runBlocking {
         val engine = MockEngine { request ->
             assertEquals(HttpMethod.Post, request.method)
-            assertEquals("/fapi/v1/listenKey", request.url.encodedPath)
+            assertEquals("/fapi/v1/fapi/v1/listenKey", request.url.encodedPath)
             assertEquals("key", request.headers["X-MBX-APIKEY"])
 
             respondJson("""{"listenKey":"abc"}""")
@@ -45,7 +45,7 @@ class FuturesUserDataServiceImplTest {
     fun `keepAliveListenKey sends put with listenKey`() = runBlocking {
         val engine = MockEngine { request ->
             assertEquals(HttpMethod.Put, request.method)
-            assertEquals("/fapi/v1/listenKey", request.url.encodedPath)
+            assertEquals("/fapi/v1/fapi/v1/listenKey", request.url.encodedPath)
             assertEquals("key", request.headers["X-MBX-APIKEY"])
             assertEquals("abc", request.url.parameters["listenKey"])
             respondTextOk()
@@ -63,7 +63,7 @@ class FuturesUserDataServiceImplTest {
     fun `closeListenKey sends delete with listenKey`() = runBlocking {
         val engine = MockEngine { request ->
             assertEquals(HttpMethod.Delete, request.method)
-            assertEquals("/fapi/v1/listenKey", request.url.encodedPath)
+            assertEquals("/fapi/v1/fapi/v1/listenKey", request.url.encodedPath)
             assertEquals("key", request.headers["X-MBX-APIKEY"])
             assertEquals("abc", request.url.parameters["listenKey"])
             respondTextOk()

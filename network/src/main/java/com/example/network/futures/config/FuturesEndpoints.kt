@@ -12,5 +12,19 @@ data class FuturesEndpoints(
             restBase = BinanceEnvs.USD_M_FUTURES.restBase,
             wsBase = BinanceEnvs.USD_M_FUTURES.wsBase
         )
+        fun usdMTest(): FuturesEndpoints = FuturesEndpoints(
+            restBase = BinanceEnvs.USD_M_FUTURES_TESTNET.restBase,
+            wsBase = BinanceEnvs.USD_M_FUTURES_TESTNET.wsBase
+        )
+        fun custom(restBase: String, wsBase: String): FuturesEndpoints =
+            FuturesEndpoints(restBase = restBase, wsBase = wsBase)
+
+        fun deduced(restBase: String): String? {
+            return when {
+                restBase.startsWith("https://") -> restBase.replaceFirst("https://", "wss://").trimEnd('/') + "/stream"
+                restBase.startsWith("http://") -> restBase.replaceFirst("http://", "ws://").trimEnd('/') + "/stream"
+                else -> null
+            }
+        }
     }
 }

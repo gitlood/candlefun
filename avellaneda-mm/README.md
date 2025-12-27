@@ -22,6 +22,7 @@ This module contains the Avellaneda-style market-making strategy and the backtes
 ### Reporting (CSV)
 
 Default path: `reports/avellaneda/avellaneda_backtest.csv`
+If you upload a report to a GitHub Gist for sharing, include the Gist URL in your notes.
 
 Env knobs:
 - `REPORT_ENABLED` (default `true`)
@@ -31,6 +32,10 @@ Env knobs:
 - `REPORT_DIR` (directory override)
 - `REPORT_PATH` (file override)
 - `AVELLANEDA_REPORT_PATH` (Avellaneda-specific file override)
+Gist upload (optional):
+- `GIST_ENABLED=true` enables upload on shutdown.
+- `GIST_TOKEN` or `GITHUB_TOKEN` (token) and `GIST_ID` (target gist) are required.
+- `GIST_MAX_BYTES` caps each file (default `2000000`).
 
 Manifest logging (JSONL):
 - `MANIFEST_ENABLED` (default `true`)

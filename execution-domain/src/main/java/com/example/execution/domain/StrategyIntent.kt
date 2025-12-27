@@ -94,6 +94,7 @@ data class RoutingDecision(
     val orderType: OrderType,
     val preferMaker: Boolean,
     val maxSlippageBps: Double?,
+    val ttlMs: Long?,
     val clientOrderId: String? = null
 )
 

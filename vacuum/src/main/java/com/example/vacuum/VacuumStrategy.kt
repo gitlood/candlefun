@@ -11,6 +11,8 @@ import com.example.platform.model.BookLevel
 import com.example.platform.model.MarketState
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.model.enums.OrderType
+import com.example.vacuum.util.RollingAverageWindow
+import com.example.vacuum.util.RollingMaxWindow
 import com.example.platform.report.Telemetry
 import kotlin.math.abs
 import kotlin.math.max
@@ -308,59 +310,5 @@ class VacuumStrategy(
         if (step <= 0.0) return value
         return kotlin.math.floor(value / step) * step
     }
-}
 
-private class RollingMaxWindow(windowMs: Long) {
-    private val windowMs = windowMs
-    private val values = ArrayDeque<TimedDouble>(64)
-
-    fun add(timestampMs: Long, value: Double) {
-        values.addLast(TimedDouble(timestampMs, value))
-        trim(timestampMs)
-    }
-
-    fun max(timestampMs: Long): Double? {
-        trim(timestampMs)
-        if (values.isEmpty()) return null
-        var m = Double.NEGATIVE_INFINITY
-        for (v in values) {
-            if (v.value > m) m = v.value
-        }
-        return if (m == Double.NEGATIVE_INFINITY) null else m
-    }
-
-    private fun trim(nowMs: Long) {
-        while (values.isNotEmpty() && values.first().timestampMs < nowMs - windowMs) {
-            values.removeFirst()
-        }
-    }
-
-    private data class TimedDouble(val timestampMs: Long, val value: Double)
-}
-
-private class RollingAverageWindow(windowMs: Long) {
-    private val windowMs = windowMs
-    private val values = ArrayDeque<TimedDouble>(64)
-    private var sum = 0.0
-
-    fun add(timestampMs: Long, value: Double) {
-        values.addLast(TimedDouble(timestampMs, value))
-        sum += value
-        trim(timestampMs)
-    }
-
-    fun mean(timestampMs: Long): Double? {
-        trim(timestampMs)
-        if (values.isEmpty()) return null
-        return sum / values.size
-    }
-
-    private fun trim(nowMs: Long) {
-        while (values.isNotEmpty() && values.first().timestampMs < nowMs - windowMs) {
-            val v = values.removeFirst()
-            sum -= v.value
-        }
-    }
-
-    private data class TimedDouble(val timestampMs: Long, val value: Double)
 }
