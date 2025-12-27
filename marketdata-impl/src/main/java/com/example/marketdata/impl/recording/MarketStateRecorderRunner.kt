@@ -22,11 +22,18 @@ object MarketStateRecorderRunner {
         val outputPath = System.getenv("MARKETSTATE_RECORD_PATH")
             ?: MarketStateRecorderConfig.default().outputPath
         val outputFile = File(outputPath)
+        val truncate = System.getenv("RECORD_TRUNCATE")?.toBooleanStrictOrNull() ?: true
         val parentDir = outputFile.parentFile
         if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs()) {
             println("Output directory does not exist and could not be created: ${parentDir.absolutePath}")
             println("Set MARKETSTATE_RECORD_PATH to a writable path.")
             return@runBlocking
+        }
+        if (truncate && outputFile.exists()) {
+            if (!outputFile.delete()) {
+                println("Failed to truncate existing file: ${outputFile.absolutePath}")
+                return@runBlocking
+            }
         }
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "SPOT").uppercase()
         val symbolsEnv = System.getenv("SYMBOLS")
@@ -39,6 +46,7 @@ object MarketStateRecorderRunner {
 
         println("MarketState recorder starting...")
         println("Output       : $outputPath")
+        println("Truncate     : $truncate")
         println("Source       : $source")
         println("TopN         : $topN")
         println("TickMs       : $tickMs")

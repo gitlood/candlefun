@@ -6,6 +6,9 @@ import com.example.account.impl.config.InventoryWalletConfig
 import com.example.account.impl.inventory.CsvInventoryStateRepository
 import com.example.account.impl.inventory.CsvWalletStore
 import com.example.avellaneda.metrics.AdverseSelectionTracker
+import com.example.avellaneda.metrics.FillStats
+import com.example.avellaneda.report.AvellanedaCsvReporter
+import com.example.avellaneda.report.AvellanedaReportRow
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
@@ -22,6 +25,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
+import kotlin.math.abs
 import kotlin.time.Duration.Companion.milliseconds
 
 object AvellanedaMmLiveRunner {
@@ -36,6 +40,7 @@ object AvellanedaMmLiveRunner {
         val snapshotDepth = System.getenv("SNAPSHOT_DEPTH")?.toIntOrNull() ?: 100
         val logEvery = System.getenv("LOG_EVERY_TICKS")?.toLongOrNull() ?: 1_000L
         val pnlEveryMs = System.getenv("LOG_PNL_EVERY_MS")?.toLongOrNull() ?: 60_000L
+        val reportEveryMs = System.getenv("REPORT_EVERY_MS")?.toLongOrNull() ?: 60_000L
 
         println("Avellaneda live (paper) starting...")
         println("Source       : $source")
@@ -96,6 +101,11 @@ object AvellanedaMmLiveRunner {
                 maxDepthLevels = queueLevels
             )
             val adverseTracker = AdverseSelectionTracker()
+            val reporter = AvellanedaCsvReporter.fromEnv("live", adverseTracker.horizonsLabel())
+            if (reporter != null) {
+                println("ReportPath   : ${reporter.reportPath()}")
+                println("ReportEveryMs: $reportEveryMs")
+            }
             val adverseProvider: (String) -> Double? = { symbol ->
                 val adv = adverseTracker.snapshotBps(symbol)
                 adv.getOrNull(1) ?: adv.lastOrNull()
@@ -176,7 +186,9 @@ object AvellanedaMmLiveRunner {
             var lastPnlLog = 0L
             var lastHealthLog = 0L
             var lastFillTotal = 0
+            var lastReportLog = 0L
             val fillCounts = mutableMapOf<String, Int>()
+            val latestMid = mutableMapOf<String, Double>()
 
             val symbolList = symbols.map { it.asSymbol() }
             val flow: Flow<MarketState> = if (source == "FUTURES") {
@@ -191,9 +203,13 @@ object AvellanedaMmLiveRunner {
                 gateway.onMarketState(state)
                 adverseTracker.onMarketState(state)
                 strategies[state.symbol]?.onMarketState(state)
+                val mid = state.midPrice ?: state.lastTradePrice
+                if (mid != null) {
+                    latestMid[state.symbol] = mid
+                }
                 inventoryRepo.applyMarkPrice(
                     Symbol.of(state.symbol),
-                    Price.fromDouble(state.midPrice ?: state.lastTradePrice ?: return@collect),
+                    Price.fromDouble(mid ?: return@collect),
                     state.eventTimeMs ?: state.timestampMs
                 )
                 ticks++
@@ -212,6 +228,7 @@ object AvellanedaMmLiveRunner {
                 }
 
                 if (lastPnlLog == 0L) lastPnlLog = now
+                if (lastReportLog == 0L) lastReportLog = now
                 if (now - lastPnlLog >= pnlEveryMs) {
                     logPnlSummary(inventoryRepo)
                     logHealthSummary(
@@ -224,6 +241,20 @@ object AvellanedaMmLiveRunner {
                     )
                     lastFillTotal = fillCounts.values.sum()
                     lastPnlLog = now
+                }
+                if (reporter != null && now - lastReportLog >= reportEveryMs) {
+                    val rows = buildReportRows(
+                        symbols,
+                        inventoryRepo,
+                        latestMid,
+                        adverseTracker,
+                        accountRepo,
+                        makerFeePct,
+                        takerFeePct,
+                        now
+                    )
+                    reporter.write(rows)
+                    lastReportLog = now
                 }
             }
         } finally {
@@ -364,5 +395,86 @@ object AvellanedaMmLiveRunner {
             "WIDEN" -> QuoteStyle.WIDEN
             else -> QuoteStyle.JOIN
         }
+    }
+
+    private suspend fun buildReportRows(
+        symbols: List<String>,
+        inventoryRepo: CsvInventoryStateRepository,
+        latestMid: Map<String, Double>,
+        adverseTracker: AdverseSelectionTracker,
+        accountRepo: SimAccountStateRepository,
+        makerFeePct: Double,
+        takerFeePct: Double,
+        nowMs: Long
+    ): List<AvellanedaReportRow> {
+        val positions = inventoryRepo.getInventory().associateBy { it.symbol.value }
+        val statsBySymbol = mutableMapOf<String, FillStats>()
+        val totalStats = FillStats()
+        symbols.forEach { symbol ->
+            val fills = accountRepo.getFills(Symbol.of(symbol), sinceTimeMs = null)
+            fills.forEach { fill ->
+                val notional = fill.price.value.toDouble() * fill.quantity.value.toDouble()
+                val stats = statsBySymbol.getOrPut(symbol) { FillStats() }
+                stats.record(notional, makerFeePct, takerFeePct, isMaker = fill.isBuyerMaker)
+                totalStats.record(notional, makerFeePct, takerFeePct, isMaker = fill.isBuyerMaker)
+            }
+        }
+        val rows = symbols.sorted().map { symbol ->
+            val pos = positions[symbol]
+            val qty = pos?.quantity?.value?.toDouble() ?: 0.0
+            val avg = pos?.avgPrice?.value?.toDouble() ?: 0.0
+            val unrealized = pos?.unrealizedPnl?.value?.toDouble() ?: 0.0
+            val realized = pos?.realizedPnl?.value?.toDouble() ?: 0.0
+            val net = realized + unrealized
+            val exposure = abs(qty * avg)
+            val pnlPct = if (exposure > 0.0) net / exposure * 100.0 else 0.0
+            val stats = statsBySymbol[symbol]
+            AvellanedaReportRow(
+                timestampMs = nowMs,
+                symbol = symbol,
+                mid = latestMid[symbol],
+                qty = qty,
+                avg = avg,
+                unrealizedPnl = unrealized,
+                realizedPnl = realized,
+                netPnl = net,
+                pnlPct = pnlPct,
+                exposure = exposure,
+                fills = stats?.totalCount() ?: 0,
+                makerFills = stats?.makerCount,
+                takerFills = stats?.takerCount,
+                totalFees = stats?.totalFees,
+                totalNotional = stats?.totalNotional,
+                advBps = adverseTracker.snapshotBps(symbol)
+            )
+        }.toMutableList()
+
+        val totals = positions.values
+        val totalExposure = totals.sumOf { abs(it.quantity.value.toDouble() * it.avgPrice.value.toDouble()) }
+        val totalRealized = totals.sumOf { it.realizedPnl.value.toDouble() }
+        val totalUnrealized = totals.sumOf { it.unrealizedPnl.value.toDouble() }
+        val totalNet = totalRealized + totalUnrealized
+        val totalPct = if (totalExposure > 0.0) totalNet / totalExposure * 100.0 else 0.0
+        rows.add(
+            AvellanedaReportRow(
+                timestampMs = nowMs,
+                symbol = "TOTAL",
+                mid = null,
+                qty = 0.0,
+                avg = 0.0,
+                unrealizedPnl = totalUnrealized,
+                realizedPnl = totalRealized,
+                netPnl = totalNet,
+                pnlPct = totalPct,
+                exposure = totalExposure,
+                fills = totalStats.totalCount(),
+                makerFills = totalStats.makerCount,
+                takerFills = totalStats.takerCount,
+                totalFees = totalStats.totalFees,
+                totalNotional = totalStats.totalNotional,
+                advBps = emptyList()
+            )
+        )
+        return rows
     }
 }
