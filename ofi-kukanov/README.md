@@ -57,3 +57,50 @@ Market data:
 - `MARKETSTATE_CSV`, `SYMBOLS`, `REPLAY_SPEEDUP`
 - `MARKETDATA_SOURCE` (`SPOT` or `FUTURES`), `TOP_N`
 - `TICK_MS`, `DEPTH_LEVELS`, `DEPTH_SPEED_MS`, `SNAPSHOT_DEPTH`
+
+## KPI Output (Reporting)
+
+KPI summaries are printed to stdout at `LOG_KPI_EVERY_MS`. Key fields include:
+
+- `netPnl`, `realizedPnl`, `unrealizedPnl`
+- `avgSlippageBps`, `avgJoinEdgeBps`, `avgAdverseMoveBps`
+- `tradeCount`, `winRate`, `fillRate`, `cancelRate`, `staleCancelRate`, `takeRate`
+
+## How To Interpret The Report (AI Notes)
+
+- **netPnl** trending up with **avgAdverseMoveBps** near 0 is healthy.
+- **avgJoinEdgeBps** negative means joins are getting picked off.
+- **avgSlippageBps** high indicates aggressive taking during thin liquidity.
+- **fillRate** too low means signal thresholds are too strict or spreads too wide.
+
+## Tuning Playbook
+
+- **If `netPnl` < 0 and `avgAdverseMoveBps` is negative**:
+  - Increase `OFI_ENTRY_THRESHOLD` and/or `OFI_TAKE_MIN_EDGE_BPS`.
+  - Reduce `ORDER_QTY`.
+  - Use `ORDER_STYLE=JOIN` more often.
+
+- **If `fillRate` is too low**:
+  - Lower `OFI_ENTRY_THRESHOLD`.
+  - Reduce `MAX_SPREAD_PCT` gating.
+  - Increase `OFI_MAX_HOLD_MS`.
+
+- **If slippage is high**:
+  - Prefer `ORDER_STYLE=JOIN`, increase `JOIN_OFFSET_TICKS`.
+  - Shorten `ORDER_TTL_MS` and `TAKE_ORDER_TTL_MS`.
+
+- **If winRate is low**:
+  - Increase `OFI_EXIT_THRESHOLD` (exit sooner).
+  - Increase `SPREAD_MIN_SAMPLES` to avoid noisy regimes.
+
+## Decision Tree
+
+```
+Is netPnl positive?
+  ├─ Yes → Is avgAdverseMoveBps near 0?
+  │        ├─ Yes → Keep settings; extend duration.
+  │        └─ No  → Raise entry threshold, reduce size.
+  └─ No  → Is fillRate very high?
+           ├─ Yes → Raise thresholds, prefer JOIN.
+           └─ No  → Lower thresholds, loosen spread gates.
+```
