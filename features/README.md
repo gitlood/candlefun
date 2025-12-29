@@ -1,21 +1,18 @@
 # Features Module
 
-This module contains the high-level feature implementations for the CandleFun application. It bridges the data layer (network/repository) with the UI and other application logic.
+This module currently hosts experimental feature utilities (e.g., DeepLOB window builders and modeling helpers) that support analytics and signal research for CandleFun.
 
-## Key Features
+## Contents
 
-- **Candle Collector Service**: A foreground service that collects historical candle data for specified symbols.
-- **Market Data Visualization**: (Planned) Components for displaying charts and order books.
-- **Trading Interface**: (Planned) Components for placing and managing orders.
+- `com.example.features.deeplob.DeepLobWindowBuilder`: Builds normalized LOB windows from raw order book snapshots.
+- `com.example.features.deeplob.DeepLobModels`: Lightweight data representations for the DeepLOB pipeline.
+- `com.example.features.ai.ExportFeaturesCode`: Helper script for exporting feature code snippets for downstream tooling.
 
-## Architecture
+## Build & Test
 
-This module follows a Clean Architecture approach, utilizing Use Cases and ViewModels (where applicable) to separate concerns.
-
-- **Use Cases**: Encapsulate specific business logic.
-- **Services**: Long-running background operations (e.g., data collection).
+- Run `./gradlew :features:test` to exercise DeepLOB serialization and window building helpers.
 
 ## Dependencies
 
-- `:network`: For accessing Binance APIs and data models.
-- `:platform`: For shared utilities and domain models.
+- `:network` (for market/state models if needed)
+- `:platform` for shared math/time extensions.

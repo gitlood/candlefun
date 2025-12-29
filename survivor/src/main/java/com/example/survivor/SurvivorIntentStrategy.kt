@@ -45,7 +45,8 @@ class SurvivorIntentStrategy(
             return emptyList()
         }
         if (side == SurvivorSide.FLAT && desired != SurvivorSide.FLAT) {
-            return listOf(enterIntent(desired, snapshot))
+            val confidence = entryConfidence(snapshot)
+            return listOf(enterIntent(desired, snapshot, confidence))
         } else if (side != SurvivorSide.FLAT) {
             if (shouldExit(snapshot)) {
                 return listOf(exitIntent(snapshot))
@@ -78,7 +79,11 @@ class SurvivorIntentStrategy(
         return false
     }
 
-    private fun enterIntent(desired: SurvivorSide, snapshot: SurvivorSnapshot): StrategyIntent {
+    private fun enterIntent(
+        desired: SurvivorSide,
+        snapshot: SurvivorSnapshot,
+        confidence: Double
+    ): StrategyIntent {
         val orderSide = if (desired == SurvivorSide.LONG_PERP) 1.0 else -1.0
         val signedQty = orderSide * config.orderQty
         side = desired
@@ -93,7 +98,8 @@ class SurvivorIntentStrategy(
                 "urgency" to "LOW",
                 "prefer_maker" to true,
                 "ttl_ms" to config.orderTtlMs,
-                "reason" to "funding_entry"
+                "reason" to "funding_entry",
+                "confidence" to confidence
             )
         )
         return StrategyIntent(
@@ -103,7 +109,8 @@ class SurvivorIntentStrategy(
             urgency = IntentUrgency.LOW,
             preferMaker = true,
             ttlMs = config.orderTtlMs,
-            confidence = 1.0,
+            confidence = confidence,
+            riskBudgetRequest = abs(signedQty),
             reason = "funding_entry"
         )
     }
@@ -134,6 +141,7 @@ class SurvivorIntentStrategy(
             preferMaker = true,
             ttlMs = config.orderTtlMs,
             confidence = 1.0,
+            riskBudgetRequest = abs(signedQty),
             reason = "funding_exit"
         )
     }
@@ -149,6 +157,13 @@ class SurvivorIntentStrategy(
             side = nextSide
             entryTimeMs = if (side == SurvivorSide.FLAT) null else context.nowMs
         }
+    }
+
+    private fun entryConfidence(snapshot: SurvivorSnapshot): Double {
+        val threshold = config.entryFundingThreshold
+        if (threshold <= 0.0) return 0.5
+        val strength = abs(snapshot.fundingRate) / threshold
+        return strength.coerceIn(0.0, 1.0)
     }
 }
 

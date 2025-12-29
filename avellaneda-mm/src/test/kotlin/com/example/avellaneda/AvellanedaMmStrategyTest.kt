@@ -4,6 +4,7 @@ import com.example.account.domain.Position
 import com.example.account.domain.Price
 import com.example.account.domain.Qty
 import com.example.account.domain.Symbol
+import com.example.account.domain.BalanceSnapshot
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.domain.ExecutionOrder
 import com.example.execution.domain.OrderCancelRequest
@@ -140,5 +141,6 @@ class AvellanedaMmStrategyTest {
         }
 
         override suspend fun getPositions(): List<Position> = emptyList()
+        override suspend fun getBalances(): List<BalanceSnapshot> = emptyList()
     }
 }

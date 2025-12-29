@@ -4,6 +4,7 @@ import com.example.account.domain.AccountStateRepository
 import com.example.account.domain.Price
 import com.example.account.domain.Symbol
 import com.example.account.domain.inventory.InventoryFill
+import com.example.account.domain.inventory.InventoryPosition
 import com.example.account.impl.config.InventoryWalletConfig
 import com.example.account.impl.di.accountImplModule
 import com.example.account.impl.inventory.CsvInventoryStateRepository
@@ -13,11 +14,11 @@ import com.example.avellaneda.metrics.FillStats
 import com.example.avellaneda.report.AvellanedaCsvReporter
 import com.example.avellaneda.report.AvellanedaReportRow
 import com.example.execution.domain.ExecutionGateway
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.EnvExecutionCredentialsProvider
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
 import com.example.execution.impl.PortfolioEngine
+import com.example.execution.impl.RiskBudgetEnv
 import com.example.execution.impl.di.executionImplModule
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
@@ -35,7 +36,6 @@ import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.HealthSummary
 import com.example.platform.report.RunSummary
 import com.example.platform.report.RunSummaryWriter
@@ -46,6 +46,7 @@ import org.koin.core.context.startKoin
 import org.koin.core.context.stopKoin
 import org.koin.core.qualifier.named
 import java.io.File
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -280,7 +281,12 @@ object AvellanedaMmTestnetRunner {
                 }
                 AvellanedaMmIntentStrategy(config = cfg, adverseBpsProvider = adverseProvider)
             }
-            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val allocator = IntentAllocator(
+                riskBudget = RiskBudgetEnv.fromEnv(
+                    defaultTotal = 1e12,
+                    defaultShares = mapOf("avellaneda_mm" to 1.0)
+                )
+            )
             val policy = ExecutionPolicy(gateway)
             val engine = PortfolioEngine(gateway, allocator, policy, strategies)
             val reportPath = telemetryPath ?: reporter?.reportPath()
@@ -310,15 +316,6 @@ object AvellanedaMmTestnetRunner {
                     notes = System.getenv("RUN_NOTES")
                 )
             )
-            GistUploader.installUploadOnShutdown(
-                label = "avellaneda_testnet",
-                files = listOfNotNull(
-                    telemetryPath?.let { File(it) },
-                    reporter?.reportPath()?.let { File(it) },
-                    manifestWriter?.path()?.let { File(it) }
-                )
-            )
-
             println("Testnet execution running. Press Ctrl+C to stop.")
             var ticks = 0L
             var lastFillPoll = 0L
@@ -489,40 +486,44 @@ object AvellanedaMmTestnetRunner {
         val avgAdv =
             positions.mapNotNull { adverseTracker.snapshotBps(it.symbol.value).firstOrNull() }
                 .let { if (it.isEmpty()) null else it.average() }
-        RunSummaryWriter.writeSummary(
-            root = findProjectRoot(),
-            summary = RunSummary(
-                strategy = "avellaneda",
-                mode = "testnet",
-                timestampMs = System.currentTimeMillis(),
-                configs = configs.filterValues { it.isNotBlank() },
-                metrics = mapOf(
-                    "net" to net,
-                    "realized" to totalRealized,
-                    "unrealized" to totalUnrealized,
-                    "exposure" to exposure,
-                    "maker_fills" to fillStats.makerCount,
-                    "taker_fills" to fillStats.takerCount,
-                    "fills_total" to fillCounts.values.sum(),
-                    "total_fees" to fillStats.totalFees,
-                    "total_notional" to fillStats.totalNotional,
-                    "avg_adv_bps" to avgAdv,
-                    "symbols" to liveSymbols
-                ),
-                health = mapOf(
-                    "positions" to positions.size,
-                    "sum_abs_qty" to positions.sumOf { abs(it.quantity.value.toDouble()) },
-                    "max_abs_qty" to positions.maxOfOrNull { abs(it.quantity.value.toDouble()) }
-                ),
-                notes = mapOfNotNulls(
-                    "reporter_path" to reporterPath,
-                    "telemetry_path" to telemetryPath,
-                    "manifest_path" to manifestPath,
-                    "run_id" to System.getenv("RUN_ID"),
-                    "run_notes" to System.getenv("RUN_NOTES")
+        try {
+            RunSummaryWriter.writeSummary(
+                root = findProjectRoot(),
+                summary = RunSummary(
+                    strategy = "avellaneda",
+                    mode = "testnet",
+                    timestampMs = System.currentTimeMillis(),
+                    configs = configs.filterValues { it.isNotBlank() },
+                    metrics = mapOf(
+                        "net" to net,
+                        "realized" to totalRealized,
+                        "unrealized" to totalUnrealized,
+                        "exposure" to exposure,
+                        "maker_fills" to fillStats.makerCount,
+                        "taker_fills" to fillStats.takerCount,
+                        "fills_total" to fillCounts.values.sum(),
+                        "total_fees" to fillStats.totalFees,
+                        "total_notional" to fillStats.totalNotional,
+                        "avg_adv_bps" to avgAdv,
+                        "symbols" to liveSymbols
+                    ),
+                    health = mapOf(
+                        "positions" to positions.size,
+                        "sum_abs_qty" to positions.sumOf { abs(it.quantity.value.toDouble()) },
+                        "max_abs_qty" to positions.maxOfOrNull { abs(it.quantity.value.toDouble()) }
+                    ),
+                    notes = mapOfNotNulls(
+                        "reporter_path" to reporterPath,
+                        "telemetry_path" to telemetryPath,
+                        "manifest_path" to manifestPath,
+                        "run_id" to System.getenv("RUN_ID"),
+                        "run_notes" to System.getenv("RUN_NOTES")
+                    )
                 )
             )
-        )
+        } catch (err: NoClassDefFoundError) {
+            println("RunSummaryWriter missing; skipping summary output (${err.message})")
+        }
     }
 
     private fun mapOfNotNulls(vararg pairs: Pair<String, String?>): Map<String, String> {
@@ -780,6 +781,12 @@ object AvellanedaMmTestnetRunner {
         val avgAdv =
             positions.mapNotNull { adverseTracker.snapshotBps(it.symbol.value).firstOrNull() }
                 .let { if (it.isEmpty()) null else it.average() }
+        val netBps = if (fillStats.totalNotional > 0.0) {
+            (totalNet / fillStats.totalNotional) * 10_000.0
+        } else {
+            0.0
+        }
+        val advAverages = averageAdvByLabel(positions, labels, adverseTracker)
         println(
             HealthSummary.render(
                 strategy = "avellaneda",
@@ -788,9 +795,38 @@ object AvellanedaMmTestnetRunner {
                 fees = fillStats.totalFees,
                 adverseBps = avgAdv,
                 fills = fillStats.totalCount(),
-                exposure = totalExposure
+                exposure = totalExposure,
+                extra = buildMap {
+                    put("fills_per_min", formatDouble(fillsPerMin, 2))
+                    put("max_abs_qty", formatDouble(maxAbsQty, 6))
+                    put("sum_abs_qty", formatDouble(sumAbsQty, 6))
+                    put("maker_fills", fillStats.makerCount.toString())
+                    put("taker_fills", fillStats.takerCount.toString())
+                    put("total_notional", formatDouble(fillStats.totalNotional, 4))
+                    put("net_bps", formatDouble(netBps, 3))
+                    advAverages.forEach { (label, value) ->
+                        put("adv_${label}_bps", formatDouble(value, 3))
+                    }
+                }
             )
         )
+    }
+
+    private fun averageAdvByLabel(
+        positions: List<InventoryPosition>,
+        labels: List<String>,
+        adverseTracker: AdverseSelectionTracker
+    ): Map<String, Double> {
+        return labels.mapIndexedNotNull { index, label ->
+            val values = positions.mapNotNull {
+                adverseTracker.snapshotBps(it.symbol.value).getOrNull(index)
+            }
+            if (values.isEmpty()) null else label to values.average()
+        }.toMap()
+    }
+
+    private fun formatDouble(value: Double, decimals: Int): String {
+        return String.format(Locale.US, "%.${decimals}f", value)
     }
 
     private suspend fun resolveSymbols(

@@ -53,11 +53,13 @@ class IntentAllocatorTest {
         val budget = RiskBudget(total = 10.0, perStrategyCap = mapOf("a" to 2.0, "b" to 8.0))
 
         val allocator = IntentAllocator(riskBudget = budget)
-        val (_, routed) = allocator.allocate(intents)
+        val riskAllocator = RiskAllocator(budget)
+        val budgets = riskAllocator.allocateBudgets(setOf("a", "b"), mapOf("a" to 1.0, "b" to 1.0))
+        val (_, routed) = allocator.allocate(intents, emptyMap(), budgets)
 
         assertEquals(1, routed.size)
-        // Risk cap forces normalization down to total cap sum (2+8=10), so net delta unchanged.
-        assertEquals(10.0, routed.first().netDelta.value.toDouble(), 1e-9)
+        // Risk cap throttles strategy a to 2.0 and leaves strategy b at 5.0 (requested < cap).
+        assertEquals(7.0, routed.first().netDelta.value.toDouble(), 1e-9)
     }
 
     @Test
@@ -72,9 +74,8 @@ class IntentAllocatorTest {
         val (_, routed) = allocator.allocate(intents)
 
         assertEquals(1, routed.size)
-        // Only part of the notional survives after weighting (1^2=1, 0.25^2=0.0625).
-        val expected = 8.0 * (4.0 / 4.25)
-        assertEquals(expected, routed.first().netDelta.value.toDouble(), 1e-9)
+        // Confidence scaling reduces the low-quality intent; total budget caps to 4.0.
+        assertEquals(4.0, routed.first().netDelta.value.toDouble(), 1e-9)
     }
 
     @Test

@@ -8,14 +8,13 @@ import com.example.account.impl.inventory.CsvWalletStore
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
 import com.example.execution.impl.PortfolioEngine
+import com.example.execution.impl.RiskBudgetEnv
 import com.example.marketdata.impl.replay.MarketStateReplayer
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.HealthSummary
 import com.example.platform.report.RunSummary
 import com.example.platform.report.RunSummaryWriter
@@ -82,7 +81,12 @@ object OfiBacktestRunner {
                 signalConfig = ofiConfig
             )
         }
-        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val allocator = IntentAllocator(
+            riskBudget = RiskBudgetEnv.fromEnv(
+                defaultTotal = 1e12,
+                defaultShares = mapOf("ofi_kukanov" to 1.0)
+            )
+        )
         val policy = ExecutionPolicy(gateway)
         val engine = PortfolioEngine(gateway, allocator, policy, strategies)
         val telemetryPath = Telemetry.resolveReportPathFromEnv("ofi_backtest", defaultEnabled = true)
@@ -106,14 +110,6 @@ object OfiBacktestRunner {
                 notes = System.getenv("RUN_NOTES")
             )
         )
-        GistUploader.installUploadOnShutdown(
-            label = "ofi_backtest",
-            files = listOfNotNull(
-                telemetryPath?.let { File(it) },
-                manifestWriter?.path()?.let { File(it) }
-            )
-        )
-
         var ticks = 0L
         var lastKpiLogMs = 0L
         replayer.stream().collect { state ->
@@ -314,7 +310,13 @@ object OfiBacktestRunner {
                 exposure = null,
                 extra = mapOf(
                     "win_rate" to winRate,
-                    "fill_rate" to fillRate
+                    "fill_rate" to fillRate,
+                    "cancel_rate" to cancelRate,
+                    "stale_cancel_rate" to staleRate,
+                    "take_rate" to takeRate,
+                    "avg_slippage_bps" to slip,
+                    "avg_join_edge_bps" to joinEdge,
+                    "avg_latency_ms" to latency
                 )
             )
         )

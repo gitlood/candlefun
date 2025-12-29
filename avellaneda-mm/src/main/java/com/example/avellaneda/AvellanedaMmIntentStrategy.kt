@@ -78,6 +78,7 @@ class AvellanedaMmIntentStrategy(
 
         val allowBid = positionQty < config.maxInventory && (bestAsk == null || bid < bestAsk)
         val allowAsk = positionQty > -config.maxInventory && (bestBid == null || ask > bestBid)
+        val confidence = quoteConfidence(spreadPct, positionQty)
 
         val intents = ArrayList<StrategyIntent>(2)
         if (allowBid) {
@@ -89,7 +90,8 @@ class AvellanedaMmIntentStrategy(
                     urgency = IntentUrgency.LOW,
                     preferMaker = true,
                     ttlMs = config.maxQuoteAgeMs,
-                    confidence = 1.0,
+                    confidence = confidence,
+                    riskBudgetRequest = kotlin.math.abs(config.orderQty),
                     reason = "quote_bid"
                 )
             )
@@ -117,7 +119,8 @@ class AvellanedaMmIntentStrategy(
                     urgency = IntentUrgency.LOW,
                     preferMaker = true,
                     ttlMs = config.maxQuoteAgeMs,
-                    confidence = 1.0,
+                    confidence = confidence,
+                    riskBudgetRequest = kotlin.math.abs(config.orderQty),
                     reason = "quote_ask"
                 )
             )
@@ -139,6 +142,14 @@ class AvellanedaMmIntentStrategy(
 
         lastActionMs = now
         return intents
+    }
+
+    private fun quoteConfidence(spreadPct: Double, positionQty: Double): Double {
+        if (adaptiveMinSpreadPct <= 0.0) return 0.5
+        val edge = ((spreadPct - adaptiveMinSpreadPct) / adaptiveMinSpreadPct).coerceIn(0.0, 1.0)
+        val inventoryUtil = (kotlin.math.abs(positionQty) / config.maxInventory).coerceIn(0.0, 1.0)
+        val inventoryPenalty = (1.0 - inventoryUtil).coerceIn(0.0, 1.0)
+        return (edge * inventoryPenalty).coerceIn(0.0, 1.0)
     }
 
     private fun updateAdaptiveSpread(nowMs: Long) {

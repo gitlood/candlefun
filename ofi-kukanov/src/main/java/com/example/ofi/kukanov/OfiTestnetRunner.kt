@@ -12,10 +12,10 @@ import com.example.execution.domain.ExecutionGateway
 import com.example.execution.impl.EnvExecutionCredentialsProvider
 import com.example.execution.impl.FillRecord
 import com.example.execution.impl.di.executionImplModule
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
 import com.example.execution.impl.PortfolioEngine
+import com.example.execution.impl.RiskBudgetEnv
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
@@ -32,7 +32,6 @@ import com.example.platform.model.UniverseConfig
 import com.example.platform.model.enums.OrderSide
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.HealthSummary
 import com.example.platform.report.RunSummary
 import com.example.platform.report.RunSummaryWriter
@@ -163,7 +162,12 @@ object OfiTestnetRunner {
                     signalConfig = ofiConfig
                 )
             }
-            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val allocator = IntentAllocator(
+                riskBudget = RiskBudgetEnv.fromEnv(
+                    defaultTotal = 1e12,
+                    defaultShares = mapOf("ofi_kukanov" to 1.0)
+                )
+            )
             val policy = ExecutionPolicy(gateway)
             val engine = PortfolioEngine(gateway, allocator, policy, strategies)
             val telemetryPath = Telemetry.resolveReportPathFromEnv("ofi_testnet", defaultEnabled = true)
@@ -187,14 +191,6 @@ object OfiTestnetRunner {
                     notes = System.getenv("RUN_NOTES")
                 )
             )
-            GistUploader.installUploadOnShutdown(
-                label = "ofi_testnet",
-                files = listOfNotNull(
-                    telemetryPath?.let { File(it) },
-                    manifestWriter?.path()?.let { File(it) }
-                )
-            )
-
             println("Testnet execution running. Press Ctrl+C to stop.")
             var ticks = 0L
             var lastKpiLogMs = 0L
@@ -466,7 +462,13 @@ object OfiTestnetRunner {
                 exposure = null,
                 extra = mapOf(
                     "win_rate" to winRate,
-                    "fill_rate" to fillRate
+                    "fill_rate" to fillRate,
+                    "cancel_rate" to cancelRate,
+                    "stale_cancel_rate" to staleRate,
+                    "take_rate" to takeRate,
+                    "avg_slippage_bps" to slip,
+                    "avg_join_edge_bps" to joinEdge,
+                    "avg_latency_ms" to latency
                 )
             )
         )
@@ -741,6 +743,10 @@ object OfiTestnetRunner {
                     averagePrice = pos.avgPrice
                 )
             }
+        }
+
+        override suspend fun getBalances(): List<com.example.account.domain.BalanceSnapshot> {
+            return delegate.getBalances()
         }
     }
 }

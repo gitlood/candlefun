@@ -4,6 +4,7 @@ import com.example.account.domain.Position
 import com.example.account.domain.Price
 import com.example.account.domain.Qty
 import com.example.account.domain.Symbol
+import com.example.account.domain.BalanceSnapshot
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.domain.ExecutionOrder
 import com.example.execution.domain.OrderCancelRequest
@@ -135,4 +136,5 @@ private class FakeExecutionGateway : ExecutionGateway {
     }
 
     override suspend fun getPositions(): List<Position> = positions
+    override suspend fun getBalances(): List<BalanceSnapshot> = emptyList()
 }

@@ -2,6 +2,7 @@ package com.example.avellaneda
 
 import com.example.account.domain.Price
 import com.example.account.domain.Symbol
+import com.example.account.domain.inventory.InventoryPosition
 import com.example.account.impl.config.InventoryWalletConfig
 import com.example.account.impl.inventory.CsvInventoryStateRepository
 import com.example.account.impl.inventory.CsvWalletStore
@@ -13,19 +14,19 @@ import com.example.avellaneda.metrics.AdverseSelectionTracker
 import com.example.avellaneda.metrics.FillStats
 import com.example.avellaneda.report.AvellanedaCsvReporter
 import com.example.avellaneda.report.AvellanedaReportRow
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
 import com.example.execution.impl.PortfolioEngine
+import com.example.execution.impl.RiskBudgetEnv
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.HealthSummary
 import com.example.platform.report.RunSummary
 import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
 import kotlinx.coroutines.runBlocking
 import java.io.File
+import java.util.Locale
 import kotlin.math.abs
 
 object AvellanedaMmBacktestRunner {
@@ -134,7 +135,12 @@ object AvellanedaMmBacktestRunner {
             }
             AvellanedaMmIntentStrategy(config = config, adverseBpsProvider = adverseProvider)
         }
-        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val allocator = IntentAllocator(
+            riskBudget = RiskBudgetEnv.fromEnv(
+                defaultTotal = 1e12,
+                defaultShares = mapOf("avellaneda_mm" to 1.0)
+            )
+        )
         val policy = ExecutionPolicy(gateway)
         val engine = PortfolioEngine(gateway, allocator, policy, strategies)
         val reportPath = telemetryPath ?: reporter?.reportPath()
@@ -163,15 +169,6 @@ object AvellanedaMmBacktestRunner {
                 notes = System.getenv("RUN_NOTES")
             )
         )
-        GistUploader.installUploadOnShutdown(
-            label = "avellaneda_backtest",
-            files = listOfNotNull(
-                telemetryPath?.let { File(it) },
-                reporter?.reportPath()?.let { File(it) },
-                manifestWriter?.path()?.let { File(it) }
-            )
-        )
-
         var ticks = 0L
         var lastPnlLog = 0L
         var lastFillTotal = 0
@@ -414,6 +411,12 @@ object AvellanedaMmBacktestRunner {
         val totalExposure = positions.sumOf { abs(it.quantity.value.toDouble() * it.avgPrice.value.toDouble()) }
         val avgAdv = positions.mapNotNull { adverseTracker.snapshotBps(it.symbol.value).firstOrNull() }
             .let { if (it.isEmpty()) null else it.average() }
+        val netBps = if (fillStats.totalNotional > 0.0) {
+            (totalNet / fillStats.totalNotional) * 10_000.0
+        } else {
+            0.0
+        }
+        val advAverages = averageAdvByLabel(positions, labels, adverseTracker)
         println(
             HealthSummary.render(
                 strategy = "avellaneda",
@@ -422,9 +425,38 @@ object AvellanedaMmBacktestRunner {
                 fees = fillStats.totalFees,
                 adverseBps = avgAdv,
                 fills = fillStats.totalCount(),
-                exposure = totalExposure
+                exposure = totalExposure,
+                extra = buildMap {
+                    put("fills_per_min", formatDouble(fillsPerMin, 2))
+                    put("max_abs_qty", formatDouble(maxAbsQty, 6))
+                    put("sum_abs_qty", formatDouble(sumAbsQty, 6))
+                    put("maker_fills", fillStats.makerCount.toString())
+                    put("taker_fills", fillStats.takerCount.toString())
+                    put("total_notional", formatDouble(fillStats.totalNotional, 4))
+                    put("net_bps", formatDouble(netBps, 3))
+                    advAverages.forEach { (label, value) ->
+                        put("adv_${label}_bps", formatDouble(value, 3))
+                    }
+                }
             )
         )
+    }
+
+    private fun averageAdvByLabel(
+        positions: List<InventoryPosition>,
+        labels: List<String>,
+        adverseTracker: AdverseSelectionTracker
+    ): Map<String, Double> {
+        return labels.mapIndexedNotNull { index, label ->
+            val values = positions.mapNotNull {
+                adverseTracker.snapshotBps(it.symbol.value).getOrNull(index)
+            }
+            if (values.isEmpty()) null else label to values.average()
+        }.toMap()
+    }
+
+    private fun formatDouble(value: Double, decimals: Int): String {
+        return String.format(Locale.US, "%.${decimals}f", value)
     }
 
     private fun parseQuoteStyle(raw: String?): QuoteStyle {

@@ -9,13 +9,12 @@ import com.example.network.futures.interfaces.FuturesMarketDataService
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.Telemetry
 import com.example.platform.report.RunSummary
 import com.example.platform.report.RunSummaryWriter
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.RiskBudgetEnv
 import java.io.File
 import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
@@ -55,7 +54,12 @@ object SurvivorBacktestRunner {
         val kpi = SurvivorKpiTracker(config)
         val gateway = SurvivorPaperGateway { fill -> kpi.onFill(fill) }
         val strategy = SurvivorIntentStrategy(config)
-        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val allocator = IntentAllocator(
+            riskBudget = RiskBudgetEnv.fromEnv(
+                defaultTotal = 1e12,
+                defaultShares = mapOf("survivor" to 1.0)
+            )
+        )
         val policy = ExecutionPolicy(gateway)
         val engine = SurvivorPortfolioEngine(gateway, allocator, policy, strategy)
         val replayer = SurvivorCsvReplayer(file, speedup = speedup)
@@ -77,13 +81,6 @@ object SurvivorBacktestRunner {
                 reportPath = telemetryPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
-            )
-        )
-        GistUploader.installUploadOnShutdown(
-            label = "survivor_backtest",
-            files = listOfNotNull(
-                telemetryPath?.let { File(it) },
-                manifestWriter?.path()?.let { File(it) }
             )
         )
 

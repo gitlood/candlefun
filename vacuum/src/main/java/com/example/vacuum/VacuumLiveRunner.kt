@@ -3,10 +3,10 @@ package com.example.vacuum
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
 import com.example.execution.impl.PortfolioEngine
+import com.example.execution.impl.RiskBudgetEnv
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
@@ -18,7 +18,6 @@ import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.Telemetry
 import java.io.File
 import kotlinx.coroutines.flow.Flow
@@ -101,13 +100,6 @@ object VacuumLiveRunner {
                     notes = System.getenv("RUN_NOTES")
                 )
             )
-            GistUploader.installUploadOnShutdown(
-                label = "vacuum_live",
-                files = listOfNotNull(
-                    telemetryPath?.let { File(it) },
-                    manifestWriter?.path()?.let { File(it) }
-                )
-            )
             val accountRepo = SimAccountStateRepository()
             val orderLatencyMs = System.getenv("SIM_ORDER_LATENCY_MS")?.toLongOrNull() ?: 0L
             val queueBuffer = System.getenv("SIM_QUEUE_BUFFER")?.toDoubleOrNull() ?: 1.0
@@ -131,7 +123,12 @@ object VacuumLiveRunner {
                 val kpi = kpiBySymbol[symbol] ?: error("KPI missing for $symbol")
                 VacuumIntentStrategy(config = configFromEnv(symbol), kpi = kpi)
             }
-            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val allocator = IntentAllocator(
+                riskBudget = RiskBudgetEnv.fromEnv(
+                    defaultTotal = 1e12,
+                    defaultShares = mapOf("vacuum" to 1.0)
+                )
+            )
             val policy = ExecutionPolicy(gateway)
             val engine = PortfolioEngine(gateway, allocator, policy, strategies)
 

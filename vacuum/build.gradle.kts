@@ -3,6 +3,12 @@ plugins {
     application
 }
 
+kotlin {
+    sourceSets.main {
+        kotlin.srcDir("src/main/java")
+    }
+}
+
 application {
     mainClass.set("com.example.vacuum.VacuumBacktestRunner")
 }

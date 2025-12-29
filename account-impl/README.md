@@ -1,14 +1,15 @@
 # Account Impl Module
 
-This module contains the implementation of the account management interfaces defined in `:account-domain`.
+This module provides the CSV-backed wallet and inventory helpers that the strategy runners use for persistence and reporting.
 
-## Implementations
+## Features
 
-- **BinanceAccountStateRepository**: Fetches account balances and positions directly from the Binance API via the `:network` module.
-- **InMemoryAccountStateRepository**: A simple in-memory implementation for simulation and testing purposes.
+- **InventoryWalletConfig**: Controls the wallet CSV path (`AVELLANEDA_WALLET_PATH`), auto-persist cadence, and file creation logic.
+- **CsvWalletStore**: Reads/writes wallet rows with columns `asset,free,locked,avgPrice,realizedPnl,unrealizedPnl`.
+- **CsvInventoryStateRepository**: Implements `InventoryStateRepository` with mutexed state, fill application logic, mark price updates, and optional background persistence.
+- **FuturesUserStreamInventoryBridge**: Hooks into Binance user stream snapshots (used in live/testnet runners) to keep the CSV wallet aligned with exchange positions.
+- **DI module**: `accountImplModule` wires the config, wallet store, and repository for Koin consumers.
 
-## Dependencies
+## Build & Test
 
-- `:account-domain`: For the core interfaces and models.
-- `:network`: For accessing the Binance API.
-- `:platform`: For shared utilities.
+- Run the module tests with `./gradlew :account-impl:test` to exercise wallet persistence logic.

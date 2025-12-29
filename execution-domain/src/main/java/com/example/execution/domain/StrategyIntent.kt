@@ -54,11 +54,17 @@ data class StrategyRegimeState(
 data class RiskBudget(
     val total: Double,
     val perStrategyCap: Map<String, Double> = emptyMap(),
+    /** Optional per-strategy max share of total risk budget (0.0–1.0). */
+    val perStrategyMaxShare: Map<String, Double> = emptyMap(),
+    /** Default edge score used when none is provided. */
+    val defaultEdgeScore: Double = 1.0,
     /**
      * Exponent applied to confidence when computing weights. p=1 keeps weights linear, p>1 makes
      * the allocator pickier (higher confidence intents get more size).
      */
-    val confidenceExponent: Double = 1.0
+    val confidenceExponent: Double = 1.0,
+    /** Exponent applied to edge score when allocating per-strategy budgets. */
+    val edgeScoreExponent: Double = 2.0
 )
 
 /** Accepted intent allocation after applying regime gates and risk budgets. */
@@ -66,6 +72,8 @@ data class IntentAllocation(
     val intent: StrategyIntent,
     val acceptedDelta: Qty,
     val appliedScale: Double,
+    val confidenceScale: Double = 1.0,
+    val budgetScale: Double = 1.0,
     val rejectionReason: String? = null
 )
 

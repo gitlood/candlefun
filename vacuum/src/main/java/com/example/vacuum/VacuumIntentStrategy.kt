@@ -55,7 +55,8 @@ class VacuumIntentStrategy(
             if (now - lastActionMs < config.entryCooldownMs) return emptyList()
             if (shouldEnter(signal)) {
                 val side = if (signal.tradeImbalance > 0.0) OrderSide.BUY else OrderSide.SELL
-                intents.add(enterIntent(side, now))
+                val confidence = entryConfidence(signal)
+                intents.add(enterIntent(side, confidence, now))
             }
         } else {
             updateTrailing(state)
@@ -113,7 +114,7 @@ class VacuumIntentStrategy(
         return trail
     }
 
-    private fun enterIntent(side: OrderSide, now: Long): StrategyIntent {
+    private fun enterIntent(side: OrderSide, confidence: Double, now: Long): StrategyIntent {
         val qty = config.orderQty
         val signedQty = if (side == OrderSide.BUY) qty else -qty
         entryTimeMs = now
@@ -130,7 +131,8 @@ class VacuumIntentStrategy(
                 "urgency" to "HIGH",
                 "prefer_maker" to false,
                 "ttl_ms" to config.orderTtlMs,
-                "reason" to "vacuum_entry"
+                "reason" to "vacuum_entry",
+                "confidence" to confidence
             )
         )
         return StrategyIntent(
@@ -140,7 +142,8 @@ class VacuumIntentStrategy(
             urgency = IntentUrgency.HIGH,
             preferMaker = false,
             ttlMs = config.orderTtlMs,
-            confidence = 1.0,
+            confidence = confidence,
+            riskBudgetRequest = abs(signedQty),
             reason = "vacuum_entry"
         )
     }
@@ -183,6 +186,7 @@ class VacuumIntentStrategy(
             preferMaker = false,
             ttlMs = config.orderTtlMs,
             confidence = 1.0,
+            riskBudgetRequest = abs(signedQty),
             reason = "vacuum_exit"
         )
     }
@@ -240,5 +244,19 @@ class VacuumIntentStrategy(
             entryTimeMs = null
             peakFavorableMid = null
         }
+    }
+
+    private fun entryConfidence(signal: VacuumSignal): Double {
+        val depthStrength = if (config.depthDropPct > 0.0) {
+            (signal.depthDropPct / config.depthDropPct).coerceIn(0.0, 1.0)
+        } else {
+            0.5
+        }
+        val imbStrength = if (config.minTradeImbalance1s > 0.0) {
+            (abs(signal.tradeImbalance) / config.minTradeImbalance1s).coerceIn(0.0, 1.0)
+        } else {
+            0.5
+        }
+        return min(depthStrength, imbStrength).coerceIn(0.0, 1.0)
     }
 }

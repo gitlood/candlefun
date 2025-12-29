@@ -4,6 +4,7 @@ import com.example.account.domain.Position
 import com.example.account.domain.Price
 import com.example.account.domain.Qty
 import com.example.account.domain.Symbol
+import com.example.account.domain.BalanceSnapshot
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.domain.ExecutionOrder
 import com.example.execution.domain.OrderCancelRequest
@@ -75,6 +76,8 @@ class SurvivorPaperGateway(
     override suspend fun getOpenOrders(symbol: Symbol?): List<ExecutionOrder> = emptyList()
 
     override suspend fun getPositions(): List<Position> = positions.values.toList()
+
+    override suspend fun getBalances(): List<BalanceSnapshot> = emptyList()
 
     private fun applyFill(fill: SurvivorFill) {
         val signedQty = if (fill.side == OrderSide.BUY) fill.quantity else -fill.quantity

@@ -3,10 +3,10 @@ package com.example.pairs
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.SimAccountStateRepository
 import com.example.execution.impl.SimExecutionGateway
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
 import com.example.execution.impl.PortfolioEngine
+import com.example.execution.impl.RiskBudgetEnv
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
@@ -16,7 +16,6 @@ import com.example.network.futures.di.futuresModule
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.Telemetry
 import java.io.File
 import kotlinx.coroutines.flow.Flow
@@ -84,7 +83,12 @@ object PairsLiveRunner {
                 takerFeePct = takerFeePct
             )
             val strategy = PairsIntentStrategy(config = configPairs)
-            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val allocator = IntentAllocator(
+                riskBudget = RiskBudgetEnv.fromEnv(
+                    defaultTotal = 1e12,
+                    defaultShares = mapOf("pairs" to 1.0)
+                )
+            )
             val policy = ExecutionPolicy(gateway)
             val engine = PortfolioEngine(gateway, allocator, policy, listOf(strategy))
             val telemetryPath = Telemetry.resolveReportPathFromEnv("pairs_live", defaultEnabled = true)
@@ -104,13 +108,6 @@ object PairsLiveRunner {
                     reportPath = telemetryPath,
                     runId = System.getenv("RUN_ID"),
                     notes = System.getenv("RUN_NOTES")
-                )
-            )
-            GistUploader.installUploadOnShutdown(
-                label = "pairs_live",
-                files = listOfNotNull(
-                    telemetryPath?.let { File(it) },
-                    manifestWriter?.path()?.let { File(it) }
                 )
             )
 

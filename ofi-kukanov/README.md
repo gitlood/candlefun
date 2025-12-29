@@ -63,9 +63,6 @@ Market data:
 KPI summaries are printed to stdout at `LOG_KPI_EVERY_MS`. Key fields include:
 If you upload KPI output to a GitHub Gist for sharing, include the Gist URL in your notes.
 Gist upload (optional):
-- `GIST_ENABLED=true` enables upload on shutdown.
-- `GIST_TOKEN` or `GITHUB_TOKEN` (token) and `GIST_ID` (target gist) are required.
-- `GIST_MAX_BYTES` caps each file (default `2000000`).
 
 - `netPnl`, `realizedPnl`, `unrealizedPnl`
 - `avgSlippageBps`, `avgJoinEdgeBps`, `avgAdverseMoveBps`

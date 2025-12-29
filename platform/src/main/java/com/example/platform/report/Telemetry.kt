@@ -5,6 +5,8 @@ import java.io.File
 import java.io.FileWriter
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicReference
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 data class TelemetryEvent(
     val type: String,
@@ -84,56 +86,137 @@ class JsonlTelemetrySink(private val file: File) : TelemetrySink {
     }
 }
 
+class LatestTelemetrySink(
+    private val file: File,
+    allowedTypes: Set<String>
+) : TelemetrySink {
+    private val lock = Any()
+    private val types = allowedTypes
+    private val latest = LinkedHashMap<String, TelemetryEvent>()
+    override fun emit(event: TelemetryEvent) {
+        if (event.type !in types) return
+        val key = buildKey(event)
+        synchronized(lock) {
+            latest[key] = event
+            writeSnapshotLocked()
+        }
+    }
+
+    override fun close() {
+        synchronized(lock) {
+            writeSnapshotLocked()
+        }
+    }
+
+    private fun buildKey(event: TelemetryEvent): String {
+        val symbol = event.data["symbol"]?.toString()?.trim().orEmpty()
+        if (symbol.isNotEmpty()) return "${event.type}::$symbol"
+        val strategy = event.data["strategy_id"]?.toString()?.trim().orEmpty()
+        if (strategy.isNotEmpty()) return "${event.type}::$strategy"
+        return event.type
+    }
+
+    private fun writeSnapshotLocked() {
+        val parent = file.parentFile
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs()
+        }
+        val payload = mapOf(
+            "updated_ts_ms" to System.currentTimeMillis(),
+            "events" to latest.values.map { event ->
+                mapOf(
+                    "type" to event.type,
+                    "ts_ms" to event.tsMs,
+                    "data" to event.data
+                )
+            }
+        )
+        val tmp = File.createTempFile(file.name, ".tmp", parent)
+            .apply { writeText(JsonEncoder.encode(payload)) }
+        try {
+            Files.move(
+                tmp.toPath(),
+                file.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (e: NoSuchFileException) {
+            if (tmp.exists()) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
+        } catch (_: Exception) {
+            if (!tmp.renameTo(file)) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
+        }
+    }
+
+}
+
 object TelemetrySinks {
     fun fromEnv(mode: String, defaultEnabled: Boolean = false): TelemetrySink {
         val enabled = resolveEnabled(defaultEnabled)
         if (!enabled) return NoopTelemetrySink
+        val telemetryMode = resolveMode()
         val truncate = System.getenv("TELEMETRY_TRUNCATE")?.toBooleanStrictOrNull() ?: false
         val timestamped = System.getenv("TELEMETRY_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
-        val path = resolvePath(mode, timestamped)
+        val path = resolvePath(mode, timestamped, telemetryMode == "latest")
         val file = File(path)
+        if (resolveLogPath()) {
+            println("ReportPath   : ${file.absolutePath}")
+        }
         if (truncate && file.exists()) {
             file.delete()
         }
-        val baseSink = JsonlTelemetrySink(file)
-        val dedupeTypes = resolveDedupeTypes()
-        return if (dedupeTypes.isEmpty()) baseSink else DedupeTelemetrySink(baseSink, dedupeTypes)
+        return when (telemetryMode) {
+            "latest" -> LatestTelemetrySink(file, resolveLatestTypes())
+            else -> {
+                val baseSink = JsonlTelemetrySink(file)
+                val dedupeTypes = resolveDedupeTypes()
+                if (dedupeTypes.isEmpty()) baseSink else DedupeTelemetrySink(baseSink, dedupeTypes)
+            }
+        }
     }
 
     fun resolvePathFromEnv(mode: String, defaultEnabled: Boolean = false): String? {
         val enabled = resolveEnabled(defaultEnabled)
         if (!enabled) return null
+        val telemetryMode = resolveMode()
         val timestamped = System.getenv("TELEMETRY_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
-        return resolvePath(mode, timestamped)
+        return resolvePath(mode, timestamped, telemetryMode == "latest")
     }
 
     private fun resolveEnabled(defaultEnabled: Boolean): Boolean {
         return System.getenv("TELEMETRY_ENABLED")?.toBooleanStrictOrNull() ?: defaultEnabled
     }
 
-    private fun resolvePath(mode: String, timestamped: Boolean): String {
+    private fun resolvePath(mode: String, timestamped: Boolean, latestMode: Boolean): String {
         val explicitPath = System.getenv("TELEMETRY_PATH")
         if (!explicitPath.isNullOrBlank()) return explicitPath
         val dir = System.getenv("TELEMETRY_DIR")
             ?: System.getenv("REPORT_DIR")
         if (!dir.isNullOrBlank()) {
-            return File(dir, reportFileName(mode, timestamped)).absolutePath
+            return File(dir, reportFileName(mode, timestamped, latestMode)).absolutePath
         }
-        return defaultReportPath(mode, timestamped)
+        return defaultReportPath(mode, timestamped, latestMode)
     }
 
-    private fun defaultReportPath(mode: String, timestamped: Boolean): String {
+    private fun defaultReportPath(mode: String, timestamped: Boolean, latestMode: Boolean): String {
         val root = findProjectRoot()
         val dir = File(root, "reports/telemetry")
-        return File(dir, reportFileName(mode, timestamped)).absolutePath
+        return File(dir, reportFileName(mode, timestamped, latestMode)).absolutePath
     }
 
-    private fun reportFileName(mode: String, timestamped: Boolean): String {
-        if (!timestamped) return "telemetry_${mode}.jsonl"
+    private fun reportFileName(mode: String, timestamped: Boolean, latestMode: Boolean): String {
+        val ext = if (latestMode) "json" else "jsonl"
+        val base = if (latestMode) "telemetry_${mode}_latest" else "telemetry_${mode}"
+        if (!timestamped) return "$base.$ext"
         val ts = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
             .withZone(java.time.ZoneOffset.UTC)
             .format(java.time.Instant.now())
-        return "telemetry_${mode}_$ts.jsonl"
+        return "${base}_$ts.$ext"
     }
 
     private fun findProjectRoot(): File {
@@ -151,6 +234,24 @@ object TelemetrySinks {
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .toSet()
+    }
+
+    private fun resolveLatestTypes(): Set<String> {
+        val raw = System.getenv("TELEMETRY_LATEST_TYPES")
+            ?: "kpi_snapshot,health_summary,config_snapshot,strategy_signal"
+        return raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun resolveMode(): String {
+        val raw = System.getenv("TELEMETRY_MODE")?.trim()?.lowercase()
+        return if (raw.isNullOrBlank()) "latest" else raw
+    }
+
+    private fun resolveLogPath(): Boolean {
+        return System.getenv("TELEMETRY_LOG_PATH")?.toBooleanStrictOrNull() ?: true
     }
 }
 

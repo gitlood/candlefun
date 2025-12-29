@@ -33,9 +33,6 @@ Env knobs:
 - `REPORT_PATH` (file override)
 - `AVELLANEDA_REPORT_PATH` (Avellaneda-specific file override)
 Gist upload (optional):
-- `GIST_ENABLED=true` enables upload on shutdown.
-- `GIST_TOKEN` or `GITHUB_TOKEN` (token) and `GIST_ID` (target gist) are required.
-- `GIST_MAX_BYTES` caps each file (default `2000000`).
 
 Manifest logging (JSONL):
 - `MANIFEST_ENABLED` (default `true`)

@@ -59,8 +59,25 @@ Strategies **do not** place orders. They output **Intents** (Desired Delta, Urge
 
 1.  **Nets Intents**: If Strategy A buys and Strategy B sells, they cross internally (saving fees).
 2.  **Regime Gating**: Enables/disables strategies based on market conditions (e.g., Volatility, Toxicity).
-3.  **Risk Management**: Enforces global position caps, leverage limits, and kill switches.
-4.  **Execution Routing**: Smartly routes the net delta to Binance (Maker vs. Taker logic).
+3.  **Edge Scoring**: Tracks rolling edge quality per strategy and throttles sizing when confidence decays.
+4.  **Risk Management**: Enforces global position caps, per-strategy caps, and kill switches.
+5.  **Execution Routing**: Smartly routes the net delta to Binance (Maker vs. Taker logic).
+
+**Synergy rules** (engine-level):
+*   Vacuum entry pauses MM quoting for a cooldown.
+*   Strong OFI signals make MM defensive (smaller size + lower confidence).
+
+**Risk budget env knobs**:
+*   `RISK_BUDGET_TOTAL` (total risk units)
+*   `RISK_MAX_SHARE_<STRATEGY_ID>` (0.0–1.0 per-strategy cap)
+*   `RISK_CAP_<STRATEGY_ID>` (absolute cap, same units as total)
+*   `RISK_CONFIDENCE_EXP`, `RISK_EDGE_EXP`, `RISK_DEFAULT_EDGE_SCORE`
+
+**Kill switch env knobs**:
+*   `MAX_DRAWDOWN_PCT` (drawdown trigger vs. equity high-water)
+*   `BALANCE_REFRESH_MS` (balance polling cadence)
+*   `KILL_SWITCH_COOLDOWN_MS` (cooldown duration)
+*   `EQUITY_ASSETS` (comma list, e.g. `USDT,BUSD`)
 
 ## 🏗️ Project Structure
 
@@ -106,9 +123,26 @@ Avellaneda runners can emit per-symbol CSV snapshots for quick review and tuning
     *   `REPORT_PATH` (file override)
     *   `AVELLANEDA_REPORT_PATH` (Avellaneda-specific file override)
 *   **Gist upload (optional)**:
-    *   `GIST_ENABLED=true` enables upload on shutdown.
-    *   `GIST_TOKEN` or `GITHUB_TOKEN` (token) and `GIST_ID` (target gist) are required.
-    *   `GIST_MAX_BYTES` caps each file (default `2000000`).
 
+## 🛰️ Running Superbot (Portfolio Orchestrator)
+
+1.  Start the full portfolio:
+
+    ```bash
+    ./gradlew :superbot:run
+    ```
+
+2.  Default knobs:
+
+    * `TOP_N=5` to pick the highest-liquidity USDT futures symbols.
+    * `TICK_MS=200`, `DEPTH_LEVELS=10`, `DEPTH_SPEED_MS=100`, `SNAPSHOT_DEPTH=100`.
+    * `RISK_BUDGET_TOTAL=1e12`, `SIM_BALANCE_FREE=100000`, `MM_ENABLED=true`, `OFI_ENABLED=true`, `VACUUM_ENABLED=true`.
+
+3.  Logging & telemetry:
+
+    * Logs: `LOG_EVERY_TICKS=1000`, `LOG_INTENTS=true`, `LOG_REGIME=false`. Lower `LOG_EVERY_TICKS` for faster ticks.
+    * Telemetry writes to `reports/telemetry/telemetry_superbot_latest.json` (overridable via `TELEMETRY_DIR`/`TELEMETRY_PATH`).
+      * Emits `config_snapshot`, `health_summary`, `kpi_snapshot`.
+      * Switch to append mode with `TELEMETRY_MODE=jsonl` and/or timestamped files with `TELEMETRY_TIMESTAMPED=true`.
 ---
 *Built with ❤️ and Kotlin.*

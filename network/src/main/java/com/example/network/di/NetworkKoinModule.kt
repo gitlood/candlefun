@@ -9,7 +9,6 @@ import com.example.network.LiveAggTradeRepoImpl
 import com.example.network.LiveBookTickerRepoImpl
 import com.example.network.LiveDepthRepoImpl
 import com.example.network.LiveKlineRepoImpl
-import com.example.network.candlecollector.CandleCollectorConfig
 import com.example.network.config.BinanceEndpoints
 import com.example.network.config.BinanceEnvs
 import com.example.network.interfaces.BinanceApiService
@@ -38,6 +37,7 @@ import com.example.network.universe.UniverseRanker
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpResponseValidator
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.serialization.kotlinx.json.json
@@ -51,6 +51,12 @@ val networkModule = module {
             expectSuccess = true
             HttpResponseValidator {
                 handleResponseExceptionWithRequest { cause, _ -> throw cause }
+            }
+            install(HttpTimeout) {
+                val timeoutMs = System.getenv("NETWORK_REQUEST_TIMEOUT_MS")?.toLongOrNull() ?: 120000L
+                requestTimeoutMillis = timeoutMs
+                connectTimeoutMillis = timeoutMs
+                socketTimeoutMillis = timeoutMs
             }
             install(ContentNegotiation) {
                 json(Json { ignoreUnknownKeys = true; isLenient = true })

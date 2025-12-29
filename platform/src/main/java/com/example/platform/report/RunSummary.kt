@@ -2,7 +2,6 @@ package com.example.platform.report
 
 import java.io.File
 import java.util.Locale
-import com.example.platform.report.GistUploader
 
 data class RunSummary(
     val strategy: String,
@@ -24,22 +23,8 @@ object RunSummaryWriter {
     )
 
     fun writeSummary(root: File, summary: RunSummary) {
-        val dir = File(root, "reports/summaries")
-        if (!dir.exists()) {
-            dir.mkdirs()
-        }
-        val filename = "${summary.strategy}_${summary.mode}_${summary.timestampMs}.json"
-        val file = File(dir, filename)
-        file.writeText(encodeSummary(summary))
-        println("ReportPath   : ${file.absolutePath}")
-        GistUploader.fromEnv()?.let { config ->
-            upload(config, summary.strategy, summary.mode, file)
-        }
-    }
-
-    private fun upload(config: GistUploader.Config, strategy: String, mode: String, file: File) {
-        val label = "${strategy}_${mode}_summary"
-        GistUploader.upload(config, label, listOf(file))
+        val aiReport = AiRunReportWriter.writeReport(root, summary)
+        println("ReportPath   : ${aiReport.absolutePath}")
     }
 
     private fun encodeSummary(summary: RunSummary): String {

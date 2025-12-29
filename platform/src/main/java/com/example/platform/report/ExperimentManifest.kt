@@ -32,6 +32,19 @@ class ExperimentManifestWriter private constructor(
         FileWriter(file, true).use { writer ->
             writer.appendLine(JSON.encodeToString(manifest))
         }
+        Telemetry.emit(
+            type = "config_snapshot",
+            tsMs = manifest.timestampMs,
+            data = mapOf(
+                "strategy_id" to manifest.strategy,
+                "mode" to manifest.mode,
+                "symbols" to manifest.symbols,
+                "params" to manifest.params,
+                "report_path" to manifest.reportPath,
+                "run_id" to manifest.runId,
+                "notes" to manifest.notes
+            )
+        )
     }
 
     fun path(): String = file.absolutePath
@@ -42,7 +55,7 @@ class ExperimentManifestWriter private constructor(
             .withZone(ZoneOffset.UTC)
 
         fun fromEnv(): ExperimentManifestWriter? {
-            val enabled = System.getenv("MANIFEST_ENABLED")?.toBooleanStrictOrNull() ?: true
+            val enabled = System.getenv("MANIFEST_ENABLED")?.toBooleanStrictOrNull() ?: false
             if (!enabled) return null
             val timestamped = System.getenv("MANIFEST_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
             val path = System.getenv("MANIFEST_PATH")

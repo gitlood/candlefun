@@ -10,10 +10,10 @@ import com.example.account.impl.inventory.CsvWalletStore
 import com.example.account.domain.AccountStateRepository
 import com.example.account.domain.Money
 import com.example.execution.domain.ExecutionGateway
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
 import com.example.execution.impl.PortfolioEngine
+import com.example.execution.impl.RiskBudgetEnv
 import com.example.marketdata.model.MarketStateConfig
 import com.example.marketdata.model.asSymbol
 import com.example.marketdata.repository.FuturesMarketStateRepository
@@ -28,7 +28,6 @@ import com.example.network.futures.interfaces.FuturesWebSocketService
 import com.example.platform.model.MarketState
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.RunSummary
 import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
@@ -128,7 +127,12 @@ object PairsTestnetRunner {
             val configPairs = configFromEnv(symbolA, symbolB, futuresFilters)
             val kpi = PairsKpiTracker(configPairs)
             val strategy = PairsIntentStrategy(config = configPairs)
-            val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+            val allocator = IntentAllocator(
+                riskBudget = RiskBudgetEnv.fromEnv(
+                    defaultTotal = 1e12,
+                    defaultShares = mapOf("pairs" to 1.0)
+                )
+            )
             val policy = ExecutionPolicy(gateway)
             val engine = PortfolioEngine(gateway, allocator, policy, listOf(strategy))
             val telemetryPath = Telemetry.resolveReportPathFromEnv("pairs_testnet", defaultEnabled = true)
@@ -148,13 +152,6 @@ object PairsTestnetRunner {
                     reportPath = telemetryPath,
                     runId = System.getenv("RUN_ID"),
                     notes = System.getenv("RUN_NOTES")
-                )
-            )
-            GistUploader.installUploadOnShutdown(
-                label = "pairs_testnet",
-                files = listOfNotNull(
-                    telemetryPath?.let { File(it) },
-                    manifestWriter?.path()?.let { File(it) }
                 )
             )
 

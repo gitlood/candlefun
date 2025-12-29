@@ -12,6 +12,7 @@ import com.example.platform.report.Telemetry
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.min
 
 class PairsIntentStrategy(
     override val id: String = "pairs",
@@ -149,6 +150,7 @@ class PairsIntentStrategy(
 
         this.side = side
         entryTimeMs = signal.timestampMs
+        val confidence = entryConfidence(signal)
         val intents = listOf(
             StrategyIntent(
                 strategyId = id,
@@ -157,7 +159,8 @@ class PairsIntentStrategy(
                 urgency = IntentUrgency.LOW,
                 preferMaker = true,
                 ttlMs = config.orderTtlMs,
-                confidence = 1.0,
+                confidence = confidence,
+                riskBudgetRequest = kotlin.math.abs(qtyA),
                 reason = "pairs_entry"
             ),
             StrategyIntent(
@@ -167,7 +170,8 @@ class PairsIntentStrategy(
                 urgency = IntentUrgency.LOW,
                 preferMaker = true,
                 ttlMs = config.orderTtlMs,
-                confidence = 1.0,
+                confidence = confidence,
+                riskBudgetRequest = kotlin.math.abs(qtyB),
                 reason = "pairs_entry"
             )
         )
@@ -181,7 +185,8 @@ class PairsIntentStrategy(
                 "urgency" to "LOW",
                 "prefer_maker" to true,
                 "ttl_ms" to config.orderTtlMs,
-                "reason" to "pairs_entry"
+                "reason" to "pairs_entry",
+                "confidence" to confidence
             )
         )
         Telemetry.emit(
@@ -194,7 +199,8 @@ class PairsIntentStrategy(
                 "urgency" to "LOW",
                 "prefer_maker" to true,
                 "ttl_ms" to config.orderTtlMs,
-                "reason" to "pairs_entry"
+                "reason" to "pairs_entry",
+                "confidence" to confidence
             )
         )
         return intents
@@ -223,6 +229,7 @@ class PairsIntentStrategy(
                 preferMaker = true,
                 ttlMs = config.orderTtlMs,
                 confidence = 1.0,
+                riskBudgetRequest = kotlin.math.abs(qtyA),
                 reason = "pairs_exit"
             ),
             StrategyIntent(
@@ -233,6 +240,7 @@ class PairsIntentStrategy(
                 preferMaker = true,
                 ttlMs = config.orderTtlMs,
                 confidence = 1.0,
+                riskBudgetRequest = kotlin.math.abs(qtyB),
                 reason = "pairs_exit"
             )
         )
@@ -246,7 +254,8 @@ class PairsIntentStrategy(
                 "urgency" to "HIGH",
                 "prefer_maker" to true,
                 "ttl_ms" to config.orderTtlMs,
-                "reason" to "pairs_exit"
+                "reason" to "pairs_exit",
+                "confidence" to 1.0
             )
         )
         Telemetry.emit(
@@ -259,7 +268,8 @@ class PairsIntentStrategy(
                 "urgency" to "HIGH",
                 "prefer_maker" to true,
                 "ttl_ms" to config.orderTtlMs,
-                "reason" to "pairs_exit"
+                "reason" to "pairs_exit",
+                "confidence" to 1.0
             )
         )
         return intents
@@ -302,6 +312,21 @@ class PairsIntentStrategy(
         }
         val increasing = abs(z) > abs(prevZ)
         trendCount = if (sign == prevSign && increasing) trendCount + 1 else 0
+    }
+
+    private fun entryConfidence(signal: PairsSignal): Double {
+        val zStrength = if (config.entryZ > 0.0) {
+            (kotlin.math.abs(signal.zScore) / config.entryZ).coerceIn(0.0, 1.0)
+        } else {
+            0.5
+        }
+        val minCorr = config.minCorr
+        val corrStrength = if (minCorr < 1.0) {
+            ((kotlin.math.abs(signal.corr) - minCorr) / (1.0 - minCorr)).coerceIn(0.0, 1.0)
+        } else {
+            1.0
+        }
+        return min(zStrength, corrStrength).coerceIn(0.0, 1.0)
     }
 
     private fun roundDown(value: Double, step: Double): Double {

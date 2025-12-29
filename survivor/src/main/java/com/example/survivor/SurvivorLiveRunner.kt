@@ -2,13 +2,12 @@ package com.example.survivor
 
 import com.example.platform.report.ExperimentManifest
 import com.example.platform.report.ExperimentManifestWriter
-import com.example.platform.report.GistUploader
 import com.example.platform.report.RunSummary
 import com.example.platform.report.RunSummaryWriter
 import com.example.platform.report.Telemetry
-import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ExecutionPolicy
 import com.example.execution.impl.IntentAllocator
+import com.example.execution.impl.RiskBudgetEnv
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
@@ -30,7 +29,12 @@ object SurvivorLiveRunner {
         val kpi = SurvivorKpiTracker(config)
         val gateway = SurvivorPaperGateway { fill -> kpi.onFill(fill) }
         val strategy = SurvivorIntentStrategy(config)
-        val allocator = IntentAllocator(riskBudget = RiskBudget(total = 1e12))
+        val allocator = IntentAllocator(
+            riskBudget = RiskBudgetEnv.fromEnv(
+                defaultTotal = 1e12,
+                defaultShares = mapOf("survivor" to 1.0)
+            )
+        )
         val policy = ExecutionPolicy(gateway)
         val engine = SurvivorPortfolioEngine(gateway, allocator, policy, strategy)
         val tailer = SurvivorCsvTailer(file, pollMs = pollMs)
@@ -49,13 +53,6 @@ object SurvivorLiveRunner {
                 reportPath = telemetryPath,
                 runId = System.getenv("RUN_ID"),
                 notes = System.getenv("RUN_NOTES")
-            )
-        )
-        GistUploader.installUploadOnShutdown(
-            label = "survivor_live",
-            files = listOfNotNull(
-                telemetryPath?.let { File(it) },
-                manifestWriter?.path()?.let { File(it) }
             )
         )
 

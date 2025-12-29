@@ -1,25 +1,22 @@
 # Execution Impl Module
 
-This module contains the implementations of the interfaces defined in the `execution-domain` module. It supports different execution environments, such as live trading via Binance or simulated trading.
+This module wires the domain contracts to concrete gateways and repositories, providing both live (Binance testnet) and simulated implementations for strategy runners.
 
 ## Implementations
 
-### Binance Execution
+- **Spot/Testnet**:
+  - `BinanceExecutionGateway` + `BinanceAccountStateRepository` for REST/WebSocket trading via `:network`.
+- **Futures Testnet**:
+  - `FuturesExecutionGateway` + `FuturesAccountStateRepository` (Binance futures client) since the strategy runners often target perpetual contracts.
+- **Simulation**:
+  - `SimExecutionGateway` uses `ConservativeFillSimulator`, queues, and fill tracking to mirror maker/taker behavior.
+  - `SimAccountStateRepository` keeps balances, fills, and exposures in-memory for backtests and paper runs.
 
-- **BinanceExecutionGateway**: Implements order placement using the `BinanceTestNetApiService` from the `:network` module.
-- **BinanceAccountStateRepository**: Fetches account balances from the Binance API.
+## DI & Configuration
 
-### Simulated Execution
+- `ExecutionImplModule` (Koin) wires `ExecutionGateway`, `AccountStateRepository`, `PortfolioEngine`, `EdgeScoreEngine`, and `IntentAllocator` for runners such as `superbot`, `avellaneda-live`, `vacuum`, `ofi`, and `pairs`. It defaults to the simulator stack but can be overridden with `FuturesExecutionGateway` plus `BinanceExecutionGateway`/`BinanceAccountStateRepository`.
+- `EnvExecutionCredentialsProvider` and `RiskBudgetEnv` read env vars to bootstrap credentials, risk shares, and kill-switch knobs consumed by `ExecutionPolicy`, `RiskAllocator`, and the `PortfolioEngine`.
 
-- **SimExecutionGateway**: A placeholder for a future simulated execution engine (paper trading).
-- **SimAccountStateRepository**: A placeholder for simulated account state.
+## Build & Test
 
-## Dependency Injection
-
-- **ExecutionImplModule**: Koin module providing bindings for `ExecutionGateway` and `AccountStateRepository`. Currently defaults to the Binance implementation.
-
-## Dependencies
-
-- `:execution-domain`: For the core interfaces and models.
-- `:network`: For accessing the Binance API.
-- `:platform`: For shared types (OrderSide, OrderType).
+- Run the implementation tests: `./gradlew :execution-impl:test`.

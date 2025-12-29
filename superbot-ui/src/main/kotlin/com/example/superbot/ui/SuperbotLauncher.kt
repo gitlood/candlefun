@@ -52,8 +52,8 @@ fun main() {
 }
 
 class SuperbotLauncher {
-    private val logTabs = JTabbedPane()
-    private val textAreas = mutableMapOf<String, JTextArea>()
+    private val strategyLogTabs = JTabbedPane()
+    private val strategyTextAreas = mutableMapOf<String, JTextArea>()
     private val scheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(4)
     private val taskPanels = mutableListOf<TaskControlPanel>()
 
@@ -72,8 +72,6 @@ class SuperbotLauncher {
         val configPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 8))
         val minimalTelemetryCheckbox = JCheckBox("Minimal Telemetry")
             .apply { isSelected = true }
-        val autoUploadCheckbox = JCheckBox("Auto Upload to Gist")
-            .apply { isSelected = true }
         val symbolField = JTextField("BTCUSDT", 10).apply {
             toolTipText = "Comma-separated symbols applied to every strategy run"
         }
@@ -82,11 +80,11 @@ class SuperbotLauncher {
             toolTipText = "Report interval in seconds (overrides defaults)"
         }
         val reportIntervalLabel = JLabel("Report s:")
-        val durationFieldAll = JTextField("300", 5)
+        val durationFieldAll = JTextField("43200", 5)
         val durationLabel = JLabel("Duration (s):")
         val applyDurationButton = JButton("Apply to All").apply {
             addActionListener {
-                val seconds = durationFieldAll.text.toLongOrNull()?.coerceAtLeast(1L) ?: 300L
+                val seconds = durationFieldAll.text.toLongOrNull()?.coerceAtLeast(1L) ?: 43200L
                 taskPanels.forEach { it.updateDuration(seconds) }
             }
         }
@@ -111,7 +109,6 @@ class SuperbotLauncher {
             }
         }
         configPanel.add(minimalTelemetryCheckbox)
-        configPanel.add(autoUploadCheckbox)
         configPanel.add(symbolLabel)
         configPanel.add(symbolField)
         configPanel.add(reportIntervalLabel)
@@ -148,7 +145,6 @@ class SuperbotLauncher {
                 scheduler = scheduler,
                 logConsumer = this@SuperbotLauncher::appendLog,
                 minimalTelemetry = { minimalTelemetryCheckbox.isSelected },
-                autoUpload = { autoUploadCheckbox.isSelected },
                 symbolsProvider = { symbolField.text.trim() },
                 reportIntervalProvider = { reportIntervalField.text.trim() }
             )
@@ -157,7 +153,7 @@ class SuperbotLauncher {
         }
 
         val tasksScroll = JScrollPane(tasksPanel)
-        val splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, tasksScroll, logTabs).apply {
+        val leftSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, tasksScroll, strategyLogTabs).apply {
             resizeWeight = 0.7
             preferredSize = Dimension(0, 400)
             dividerSize = 6
@@ -165,9 +161,10 @@ class SuperbotLauncher {
             minimumSize = Dimension(0, 200)
         }
 
-        logTabs.preferredSize = Dimension(0, 180)
+        setupStrategyLogTabs()
+        strategyLogTabs.preferredSize = Dimension(0, 180)
         frame.add(configPanel, BorderLayout.NORTH)
-        frame.add(splitPane, BorderLayout.CENTER)
+        frame.add(leftSplit, BorderLayout.CENTER)
 
         frame.pack()
         frame.setLocationRelativeTo(null)
@@ -176,34 +173,34 @@ class SuperbotLauncher {
 
     private fun appendLog(label: String, line: String) {
         SwingUtilities.invokeLater {
-            val area = textAreas.getOrPut(label) {
-                val newArea = JTextArea().apply {
-                    isEditable = false
-                    lineWrap = false
-                    val caret = caret as DefaultCaret
-                    caret.updatePolicy = DefaultCaret.ALWAYS_UPDATE
-                }
-                logTabs.addTab(label, JScrollPane(newArea))
-                newArea
-            }
+            val area = strategyTextAreas[label] ?: return@invokeLater
             area.append(line.trimEnd() + "\n")
         }
     }
 
     private fun resetReports(root: File) {
-        val telemetryDir = File(root, "reports/telemetry")
-        deleteDirectoryContents(telemetryDir)
-        val manifestFile = File(root, "reports/manifest.jsonl")
-        if (manifestFile.exists()) {
-            manifestFile.delete()
-            appendLog("system", "reset: deleted ${manifestFile.path}")
-        }
+        val reportsDir = File(root, "reports")
+        deleteDirectoryContents(reportsDir)
     }
 
     private fun resetLogs() {
         SwingUtilities.invokeLater {
-            textAreas.clear()
-            logTabs.removeAll()
+            setupStrategyLogTabs()
+        }
+    }
+
+    private fun setupStrategyLogTabs() {
+        strategyTextAreas.clear()
+        strategyLogTabs.removeAll()
+        STRATEGY_TASKS.forEach { task ->
+            val area = JTextArea().apply {
+                isEditable = false
+                lineWrap = false
+                val caret = caret as DefaultCaret
+                caret.updatePolicy = DefaultCaret.ALWAYS_UPDATE
+            }
+            strategyTextAreas[task.label] = area
+            strategyLogTabs.addTab(task.label, JScrollPane(area))
         }
     }
 
@@ -229,7 +226,6 @@ class TaskControlPanel(
     private val scheduler: ScheduledExecutorService,
     private val logConsumer: (String, String) -> Unit,
     private val minimalTelemetry: () -> Boolean,
-    private val autoUpload: () -> Boolean,
     private val symbolsProvider: () -> String,
     private val reportIntervalProvider: () -> String
 ) : JPanel() {
@@ -237,7 +233,7 @@ class TaskControlPanel(
         horizontalAlignment = SwingConstants.LEFT
         foreground = Color.DARK_GRAY
     }
-    private val durationField = JTextField("300", 5).apply {
+    private val durationField = JTextField("43200", 5).apply {
         preferredSize = Dimension(60, 24)
         toolTipText = "Duration (seconds) before the task auto-stops"
     }
@@ -321,7 +317,7 @@ class TaskControlPanel(
 
     private fun startProcess() {
         if (process != null) return
-        val durationSeconds = durationField.text.toLongOrNull()?.coerceAtLeast(1L) ?: 300L
+        val durationSeconds = durationField.text.toLongOrNull()?.coerceAtLeast(1L) ?: 43200L
         val env = buildEnv()
         try {
             val builder = ProcessBuilder("./gradlew", task.gradleTask).apply {
@@ -346,9 +342,11 @@ class TaskControlPanel(
             thread {
                 val exitCode = proc.waitFor()
                 logConsumer(task.label, "exited code=$exitCode")
-                val color = if (exitCode == 0) Color(0, 128, 0) else Color.RED
+                val isSuccess = exitCode == 0 || exitCode == 143
+                val color = if (isSuccess) Color(0, 128, 0) else Color.RED
+                val statusText = if (exitCode == 143) "Success" else "Stopped (exit $exitCode)"
                 SwingUtilities.invokeLater {
-                    setStatus("Stopped (exit $exitCode)", color)
+                    setStatus(statusText, color)
                     reportLabel.foreground = if (reportLabel.text.contains("uploaded")) Color(0, 128, 0) else reportLabel.foreground
                     startButton.isEnabled = true
                     stopButton.isEnabled = false
@@ -388,15 +386,14 @@ class TaskControlPanel(
         val env = mutableMapOf<String, String>()
         env["TELEMETRY_ENABLED"] = "true"
         env["TELEMETRY_DIR"] = "reports/telemetry"
-        env["FAST_MODE"] = "true"
-        env["GIST_ENABLED"] = if (autoUpload()) "true" else "false"
-        env["GIST_MAX_BYTES"] = "2000000"
+        env["FAST_MODE"] = "false"
+        env["REPLAY_SPEEDUP"] = "10"
         if (minimalTelemetry()) {
             env["LOG_KPI_EVERY_MS"] = "60000"
             env["LOG_EVERY_TICKS"] = "10000"
         } else {
-            env["LOG_KPI_EVERY_MS"] = "10000"
-            env["LOG_EVERY_TICKS"] = "500"
+            env["LOG_KPI_EVERY_MS"] = "60000"
+            env["LOG_EVERY_TICKS"] = "10000"
         }
         val reportSeconds = reportIntervalProvider().toLongOrNull()
         if (reportSeconds != null && reportSeconds > 0) {
@@ -419,10 +416,8 @@ class TaskControlPanel(
     }
 
     private fun handleReportLine(line: String) {
-        when {
-            line.contains("gist_upload_ok") -> setReportStatus("Report: uploaded", Color(0, 180, 0))
-            line.contains("gist_upload_error") -> setReportStatus("Report: upload error", Color.RED)
-            line.contains("gist_upload_skip") -> setReportStatus("Report: skipped", Color.ORANGE)
+        if (line.contains("ReportPath")) {
+            setReportStatus("Report: ready", Color(0, 128, 255))
         }
     }
 
@@ -436,12 +431,22 @@ class TaskControlPanel(
         if (colon == -1) return
         val path = line.substring(colon + 1).trim()
         if (path.isBlank()) return
+        if (shouldIgnoreReportPath(path)) return
         lastReportPath = path
         SwingUtilities.invokeLater {
             openReportButton.isEnabled = true
             openReportButton.toolTipText = path
         }
         markReportGenerated("Report: ready", Color(0, 128, 255))
+    }
+
+    private fun shouldIgnoreReportPath(path: String): Boolean {
+        val normalized = path.lowercase()
+        val isJson = normalized.endsWith(".json") || normalized.endsWith(".jsonl")
+        val isCsv = normalized.endsWith(".csv")
+        val current = lastReportPath?.lowercase()
+        val currentIsJson = current?.endsWith(".json") == true || current?.endsWith(".jsonl") == true
+        return isCsv && currentIsJson || (!isJson && !isCsv)
     }
 
     private fun openReportLink() {

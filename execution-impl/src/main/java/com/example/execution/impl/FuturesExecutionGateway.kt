@@ -87,6 +87,10 @@ class FuturesExecutionGateway(
         }
     }
 
+    override suspend fun getBalances(): List<BalanceSnapshot> {
+        return accountStateRepository.getBalances()
+    }
+
     private fun emitOrderEvent(order: ExecutionOrder, eventType: String) {
         Telemetry.emit(
             type = "order_event",

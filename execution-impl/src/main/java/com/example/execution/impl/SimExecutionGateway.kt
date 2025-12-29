@@ -91,6 +91,10 @@ class SimExecutionGateway(
         return positions.values.toList()
     }
 
+    override suspend fun getBalances(): List<BalanceSnapshot> {
+        return accountStateRepository.getBalances()
+    }
+
     suspend fun onMarketState(state: MarketState) {
         val now = state.eventTimeMs ?: state.timestampMs
         val openOrders = getOpenOrders(Symbol.of(state.symbol))

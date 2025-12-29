@@ -1,28 +1,22 @@
 # Network Module
 
-This module handles all network communication with the Binance API. It includes implementations for both the public and private APIs, as well as WebSocket connections for real-time data.
+This module encapsulates every Binance integration (Spot, Futures, REST, WebSocket) plus the candle collector and supporting utilities.
 
-## Features
+## Key Services
 
-- **Binance API Integration**: Provides access to Binance REST APIs (Spot, TestNet).
-- **WebSocket Client**: Handles real-time market data streams (Tickers, Klines, Depth).
-- **Data Mappers**: Converts DTOs (Data Transfer Objects) to Domain models.
-- **Candle Collector**: A utility to collect and store historical candle data.
+- `BinanceApiServiceImpl` / `BinancePrivateApi`: Spot REST API helpers for tickers, depth, trades, order routes.
+- `BinanceTestNetApiServiceImpl`: Same stack pinning to Binance TestNet.
+- `BinanceUniverse`: Fetches symbol metadata, volumes, and the `resolveSymbols` helper used by `superbot`.
+- `LiveKlineRepoImpl`, `LiveDepthRepoImpl`, `LiveAggTradeRepoImpl`, and `LiveBookTickerRepoImpl`: Wrap real-time feeds into `Flow`s consumed by `MarketState`.
+- `BinanceWebSocketServiceImpl` & `BinanceOrderBookServiceImpl`: Manage subscriptions, reconnects, and top-of-book snapshots.
+- `BinanceSigner`: HMAC SHA256 signing utility used by all private endpoints.
 
-## Key Components
+## Candle Collector
 
-- `BinanceApiServiceImpl`: Implementation of the REST API calls.
-- `BinanceWebSocketServiceImpl`: Manages WebSocket connections and subscriptions.
-- `BinanceSigner`: Utility for signing requests with HMAC SHA256.
-- `CandleStore`: Local storage for collected candle data.
+- `UniversalCandleCollector` (`./gradlew :network:run`) backfills candles into `CandlesStore` (`candles.db` default path). Override via `CANDLE_DB_PATH`.
+- `CandleCollectorConfig` drives symbol lists, intervals, backfill window, and JDBC connection.
+- `CandleStore` implements `CandleStorePort` for persistence (insert/delete) and powers offline replay + analytics.
 
-## Testing
+## Build & Test
 
-The module includes comprehensive unit tests for:
-- DTO Mappers
-- Repository Implementations
-- API Security (Signing)
-- Candle Storage
-
-To run tests:
-`./gradlew :network:test`
+- Run the module tests: `./gradlew :network:test`.

@@ -62,7 +62,8 @@ class OfiKukanovIntentStrategy(
             if (abs(normalized) >= config.entryThreshold) {
                 val side = if (normalized > 0.0) OrderSide.BUY else OrderSide.SELL
                 val style = resolveEntryStyle(normalized)
-                return listOf(entryIntent(side, style, now))
+                val confidence = entryConfidence(normalized)
+                return listOf(entryIntent(side, style, confidence, now))
             }
         } else if (shouldExit(posQty, normalized, now)) {
             return listOf(exitIntent(posQty, now))
@@ -71,7 +72,12 @@ class OfiKukanovIntentStrategy(
         return emptyList()
     }
 
-    private fun entryIntent(side: OrderSide, style: OfiOrderStyle, nowMs: Long): StrategyIntent {
+    private fun entryIntent(
+        side: OrderSide,
+        style: OfiOrderStyle,
+        confidence: Double,
+        nowMs: Long
+    ): StrategyIntent {
         val signedQty = if (side == OrderSide.BUY) config.orderQty else -config.orderQty
         Telemetry.emit(
             type = "strategy_intent",
@@ -83,7 +89,8 @@ class OfiKukanovIntentStrategy(
                 "urgency" to "MEDIUM",
                 "prefer_maker" to (style == OfiOrderStyle.JOIN),
                 "ttl_ms" to if (style == OfiOrderStyle.TAKE) config.takeOrderTtlMs else config.orderTtlMs,
-                "reason" to "ofi_entry"
+                "reason" to "ofi_entry",
+                "confidence" to confidence
             )
         )
         lastActionMs = nowMs
@@ -94,7 +101,8 @@ class OfiKukanovIntentStrategy(
             urgency = IntentUrgency.MEDIUM,
             preferMaker = (style == OfiOrderStyle.JOIN),
             ttlMs = if (style == OfiOrderStyle.TAKE) config.takeOrderTtlMs else config.orderTtlMs,
-            confidence = 1.0,
+            confidence = confidence,
+            riskBudgetRequest = abs(config.orderQty),
             reason = "ofi_entry"
         )
     }
@@ -123,6 +131,7 @@ class OfiKukanovIntentStrategy(
             preferMaker = (config.orderStyle == OfiOrderStyle.JOIN),
             ttlMs = if (config.orderStyle == OfiOrderStyle.TAKE) config.takeOrderTtlMs else config.orderTtlMs,
             confidence = 1.0,
+            riskBudgetRequest = abs(signedQty),
             reason = "ofi_exit"
         )
     }
@@ -189,6 +198,13 @@ class OfiKukanovIntentStrategy(
         } else {
             config.orderStyle
         }
+    }
+
+    private fun entryConfidence(normalized: Double): Double {
+        val threshold = config.entryThreshold
+        if (threshold <= 0.0) return 0.5
+        val strength = abs(normalized) / threshold
+        return strength.coerceIn(0.0, 1.0)
     }
 
     private fun direction(value: Double): Int {
