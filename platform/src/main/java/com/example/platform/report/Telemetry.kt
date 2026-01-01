@@ -235,10 +235,10 @@ class AsyncTelemetrySink(
 }
 
 object TelemetrySinks {
-    fun fromEnv(mode: String, defaultEnabled: Boolean = false): TelemetrySink {
+    fun fromEnv(mode: String, defaultEnabled: Boolean = false, overrideMode: String? = null): TelemetrySink {
         val enabled = resolveEnabled(defaultEnabled)
         if (!enabled) return NoopTelemetrySink
-        val telemetryMode = resolveMode()
+        val telemetryMode = overrideMode?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: resolveMode()
         val truncate = System.getenv("TELEMETRY_TRUNCATE")?.toBooleanStrictOrNull() ?: false
         val timestamped = System.getenv("TELEMETRY_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
         val path = resolvePath(mode, timestamped, telemetryMode == "latest")
@@ -333,7 +333,10 @@ object TelemetrySinks {
 
     private fun resolveMode(): String {
         val raw = System.getenv("TELEMETRY_MODE")?.trim()?.lowercase()
-        return if (raw.isNullOrBlank()) "latest" else raw
+        if (raw.isNullOrBlank()) return "latest"
+        val forceJsonl = System.getenv("TELEMETRY_FORCE_JSONL")?.toBooleanStrictOrNull() ?: false
+        if (raw == "jsonl" && !forceJsonl) return "latest"
+        return raw
     }
 
     private fun resolveLogPath(): Boolean {

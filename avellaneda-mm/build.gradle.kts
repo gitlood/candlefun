@@ -8,6 +8,13 @@ application {
     mainClass.set("com.example.avellaneda.AvellanedaMmBacktestRunner")
 }
 
+tasks.register<JavaExec>("runBacktest") {
+    group = "application"
+    description = "Run Avellaneda MM backtest runner"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.example.avellaneda.AvellanedaMmBacktestRunner")
+}
+
 dependencies {
     implementation(project(":platform"))
     implementation(project(":account-domain"))

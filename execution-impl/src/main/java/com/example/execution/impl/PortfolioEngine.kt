@@ -28,7 +28,7 @@ class PortfolioEngine(
     private val ofiDefenseThreshold: Double = envDouble("OFI_MM_DEFENSE_CONF", 0.8),
     private val ofiDefenseScale: Double = envDouble("MM_DEFENSE_SCALE", 0.5),
     private val balanceRefreshMs: Long = envLong("BALANCE_REFRESH_MS", 5_000L),
-    private val maxDrawdownPct: Double = envDouble("MAX_DRAWDOWN_PCT", 0.0),
+    private val maxDrawdownPct: Double = envDouble("MAX_DRAWDOWN_PCT", 0.05),
     private val killSwitchCooldownMs: Long = envLong("KILL_SWITCH_COOLDOWN_MS", 60_000L),
     private val equityAssets: Set<String> = envCsv("EQUITY_ASSETS", "USDT,BUSD")
 ) {
@@ -413,6 +413,7 @@ class PortfolioEngine(
             tsMs = nowMs,
             data = mapOf(
                 "symbol" to decision.symbol.value,
+                "client_order_id" to decision.clientOrderId,
                 "original_net_delta" to decision.netDelta.value.toDouble(),
                 "final_net_delta" to finalDelta?.value?.toDouble(),
                 "scale" to scale,

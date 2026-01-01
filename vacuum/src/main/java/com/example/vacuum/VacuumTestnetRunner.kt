@@ -55,7 +55,7 @@ object VacuumTestnetRunner {
         val snapshotDepth = System.getenv("SNAPSHOT_DEPTH")?.toIntOrNull() ?: 100
         val logEvery = System.getenv("LOG_EVERY_TICKS")?.toLongOrNull() ?: 1_000L
         val kpiEveryMs = System.getenv("LOG_KPI_EVERY_MS")?.toLongOrNull() ?: 60_000L
-        val leverage = System.getenv("LEVERAGE")?.toIntOrNull() ?: 1
+        val leverage = (System.getenv("LEVERAGE")?.toIntOrNull() ?: 1).coerceIn(1, 2)
         val fillsPollMs = System.getenv("FILLS_POLL_MS")?.toLongOrNull() ?: 2_000L
         val logPnlEveryMs = System.getenv("LOG_PNL_EVERY_MS")?.toLongOrNull() ?: 60_000L
 

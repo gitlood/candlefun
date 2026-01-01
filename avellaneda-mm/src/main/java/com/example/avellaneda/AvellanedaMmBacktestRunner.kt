@@ -60,7 +60,7 @@ object AvellanedaMmBacktestRunner {
         val accountRepo = SimAccountStateRepository()
         val walletConfig = InventoryWalletConfig.default()
         val inventoryRepo = CsvInventoryStateRepository(CsvWalletStore(walletConfig.walletCsvPath), walletConfig)
-        val orderLatencyMs = System.getenv("SIM_ORDER_LATENCY_MS")?.toLongOrNull() ?: 0L
+        val orderLatencyMs = System.getenv("SIM_ORDER_LATENCY_MS")?.toLongOrNull() ?: 100L
         val queueBuffer = System.getenv("SIM_QUEUE_BUFFER")?.toDoubleOrNull() ?: 1.0
         val queueLevels = System.getenv("SIM_MAX_QUEUE_LEVELS")?.toIntOrNull() ?: 5
         val makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: 0.0002
@@ -121,7 +121,9 @@ object AvellanedaMmBacktestRunner {
                 maxVol1s = System.getenv("MAX_VOL_1S")?.toDoubleOrNull() ?: base.maxVol1s,
                 maxVol5s = System.getenv("MAX_VOL_5S")?.toDoubleOrNull() ?: base.maxVol5s,
                 maxVol10s = System.getenv("MAX_VOL_10S")?.toDoubleOrNull() ?: base.maxVol10s,
-                volSpreadMultiplier = System.getenv("VOL_SPREAD_MULT")?.toDoubleOrNull() ?: base.volSpreadMultiplier,
+                volSpreadMultiplier = System.getenv("VOL_SPREAD_MULTIPLIER")?.toDoubleOrNull()
+                    ?: System.getenv("VOL_SPREAD_MULT")?.toDoubleOrNull()
+                    ?: base.volSpreadMultiplier,
                 adaptiveSpreadTargetBps = System.getenv("ADAPTIVE_SPREAD_TARGET_BPS")?.toDoubleOrNull()
                     ?: base.adaptiveSpreadTargetBps,
                 adaptiveSpreadUpdateMs = System.getenv("ADAPTIVE_SPREAD_UPDATE_MS")?.toLongOrNull()

@@ -59,8 +59,11 @@ class AvellanedaMmIntentStrategy(
             )
         )
         if (gateReason != null) {
-            if (config.logGateDecisions && gateReason != lastGateReason) {
-                println("gate=${config.symbol} reason=$gateReason")
+            if (gateReason != lastGateReason) {
+                emitRegimeGate(now, gateReason, spreadPct, mid)
+                if (config.logGateDecisions) {
+                    println("gate=${config.symbol} reason=$gateReason")
+                }
                 lastGateReason = gateReason
             }
             lastGateMs = now
@@ -69,8 +72,11 @@ class AvellanedaMmIntentStrategy(
         }
         lastGateReason = null
         if (now - lastGateMs < config.gateCooldownMs) {
-            if (config.logGateDecisions && lastGateReason != "cooldown") {
-                println("gate=${config.symbol} reason=cooldown")
+            if (lastGateReason != "cooldown") {
+                emitRegimeGate(now, "cooldown", spreadPct, mid)
+                if (config.logGateDecisions) {
+                    println("gate=${config.symbol} reason=cooldown")
+                }
                 lastGateReason = "cooldown"
             }
             lastActionMs = now
@@ -151,6 +157,20 @@ class AvellanedaMmIntentStrategy(
 
         lastActionMs = now
         return intents
+    }
+
+    private fun emitRegimeGate(tsMs: Long, reason: String, spreadPct: Double, mid: Double?) {
+        Telemetry.emit(
+            type = "regime_gate",
+            tsMs = tsMs,
+            data = mapOf(
+                "strategy_id" to id,
+                "symbol" to config.symbol,
+                "reason" to reason,
+                "spread_pct" to spreadPct,
+                "mid" to mid
+            )
+        )
     }
 
     private fun quoteConfidence(spreadPct: Double, positionQty: Double): Double {

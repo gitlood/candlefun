@@ -1,6 +1,9 @@
 package com.example.superbot
 
 import com.example.account.domain.BalanceSnapshot
+import com.example.account.domain.Price
+import com.example.account.domain.Qty
+import com.example.account.domain.Symbol
 import com.example.execution.domain.RiskBudget
 import com.example.execution.impl.ConservativeFillSimulator
 import com.example.execution.impl.EdgeScoreEngine
@@ -20,7 +23,11 @@ import com.example.network.di.networkModule
 import com.example.network.futures.di.futuresModule
 import com.example.platform.model.MarketState
 import com.example.platform.model.UniverseConfig
+import com.example.platform.model.enums.OrderSide
 import com.example.platform.report.Telemetry
+import com.example.platform.report.TelemetryEvent
+import com.example.platform.report.TelemetrySink
+import com.example.platform.report.TelemetrySinks
 import com.example.avellaneda.AvellanedaMmConfig
 import com.example.avellaneda.AvellanedaMmIntentStrategy
 import com.example.ofi.kukanov.OfiKukanovIntentStrategy
@@ -29,7 +36,10 @@ import com.example.pairs.PairsConfig
 import com.example.pairs.PairsIntentStrategy
 import com.example.survivor.SurvivorConfig
 import com.example.survivor.SurvivorCsvTailer
+import com.example.survivor.SurvivorFill
 import com.example.survivor.SurvivorIntentStrategy
+import com.example.survivor.SurvivorKpiTracker
+import com.example.survivor.SurvivorSide
 import com.example.survivor.asMarketState
 import com.example.vacuum.VacuumConfig
 import com.example.vacuum.VacuumIntentStrategy
@@ -46,13 +56,22 @@ import kotlin.time.Duration.Companion.milliseconds
 
 object Superbot {
     private val statsLock = Any()
+    private val metricsLock = Any()
     private val strategyStats = ConcurrentHashMap<String, StrategyStat>()
     private val symbolStats = ConcurrentHashMap<String, SymbolStat>()
     private val strategyDna = ConcurrentHashMap<String, MutableList<Map<String, Any?>>>()
+    private val slippageStats = ConcurrentHashMap<String, SlippageStat>()
+    private val allocationsByClientId = ConcurrentHashMap<String, List<AllocationWeight>>()
+    private val clientIdByOrderId = ConcurrentHashMap<Long, String>()
+    private val lastAllocationsBySymbol = ConcurrentHashMap<String, List<AllocationWeight>>()
+    @Volatile
+    private var survivorKpiTracker: SurvivorKpiTracker? = null
 
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
-        Telemetry.configureFromEnv("superbot", defaultEnabled = true)
+        val overrideMode = resolveSuperbotTelemetryMode()
+        val baseSink = TelemetrySinks.fromEnv("superbot", defaultEnabled = true, overrideMode = overrideMode)
+        Telemetry.configure(CompositeTelemetrySink(listOf(baseSink, SuperbotTelemetrySink())))
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "FUTURES").uppercase()
         val symbolsEnv = System.getenv("SYMBOLS")
         val topN = System.getenv("TOP_N")?.toIntOrNull() ?: 5
@@ -306,6 +325,7 @@ object Superbot {
         val file = File(path)
         println("Survivor tail enabled: ${file.absolutePath}")
         val config = survivorConfig()
+        survivorKpiTracker = SurvivorKpiTracker(config)
         recordStrategyDna(
             "survivor",
             mapOf(
@@ -325,6 +345,7 @@ object Superbot {
         val tailer = SurvivorCsvTailer(file, pollMs = pollMs)
         CoroutineScope(Dispatchers.IO).launch {
             tailer.stream().collect { snapshot ->
+                survivorKpiTracker?.onMark(snapshot, SurvivorSide.FLAT)
                 val intents = strategy.onSnapshot(
                     snapshot,
                     com.example.execution.domain.StrategyContext(
@@ -423,7 +444,7 @@ object Superbot {
             "pairs" to 0.25
         )
         return RiskBudgetEnv.fromEnv(
-            defaultTotal = envDouble("RISK_BUDGET_TOTAL", 1e12),
+            defaultTotal = envDouble("RISK_BUDGET_TOTAL", 1000.0),
             defaultShares = shares
         )
     }
@@ -557,7 +578,9 @@ object Superbot {
             val strategies = strategyStats.mapValues { (strategyId, stat) ->
                 val avgConf = if (stat.intentCount > 0) stat.totalConfidence / stat.intentCount else 0.0
                 val avgDelta = if (stat.intentCount > 0) stat.totalAbsDelta / stat.intentCount else 0.0
-                val dna = strategyDna[strategyId].orEmpty()
+                val dna = strategyDna[strategyId]?.toList().orEmpty()
+                val avgSlip = avgSlippageBps(strategyId)
+                val survivorSummary = if (strategyId == "survivor") survivorKpiTracker?.summary() else null
                 mapOf(
                     "intents" to stat.intentCount,
                     "avg_conf" to avgConf,
@@ -566,6 +589,10 @@ object Superbot {
                     "last_symbol" to stat.lastSymbol,
                     "last_reason" to stat.lastReason,
                     "last_ts_ms" to stat.lastIntentMs,
+                    "avg_slippage_bps" to avgSlip,
+                    "net_carry" to survivorSummary?.netCarry,
+                    "expected_carry" to survivorSummary?.expectedCarry,
+                    "worst_basis_abs_pct" to survivorSummary?.worstBasisAbsPct,
                     "dna" to dna
                 )
             }
@@ -585,14 +612,148 @@ object Superbot {
                 "ticks" to ticks,
                 "strategies" to strategies,
                 "symbols" to symbols,
-                "strategy_dna" to strategyDna
+                "strategy_dna" to strategyDna.mapValues { (_, entries) -> entries.toList() }
             )
         }
     }
 
     private fun recordStrategyDna(strategyId: String, payload: Map<String, Any?>) {
-        val list = strategyDna.getOrPut(strategyId) { mutableListOf() }
-        list.add(payload)
+        synchronized(statsLock) {
+            val list = strategyDna.getOrPut(strategyId) { mutableListOf() }
+            list.add(payload)
+        }
+    }
+
+    private fun avgSlippageBps(strategyId: String): Double? {
+        synchronized(metricsLock) {
+            val stat = slippageStats[strategyId] ?: return null
+            if (stat.qtySum <= 0.0) return null
+            return stat.bpsQtySum / stat.qtySum
+        }
+    }
+
+    private fun onTelemetry(event: TelemetryEvent) {
+        when (event.type) {
+            "netting_result" -> handleNettingResult(event)
+            "routing_decision" -> handleRoutingDecision(event)
+            "execution_decision" -> handleExecutionDecision(event)
+            "order_event" -> handleOrderEvent(event)
+            "fill_event" -> handleFillEvent(event)
+        }
+    }
+
+    private fun handleExecutionDecision(event: TelemetryEvent) {
+        val data = event.data
+        val clientId = data["client_order_id"]?.toString()?.trim().orEmpty()
+        if (clientId.isEmpty()) return
+        val parsed = parseAllocations(data["allocations"] as? List<*>) ?: return
+        allocationsByClientId[clientId] = parsed
+    }
+
+    private fun handleNettingResult(event: TelemetryEvent) {
+        val data = event.data
+        val symbol = data["symbol"]?.toString()?.trim().orEmpty()
+        if (symbol.isEmpty()) return
+        val parsed = parseAllocations(data["allocations"] as? List<*>) ?: return
+        lastAllocationsBySymbol[symbol] = parsed
+    }
+
+    private fun handleRoutingDecision(event: TelemetryEvent) {
+        val data = event.data
+        val clientId = data["client_order_id"]?.toString()?.trim().orEmpty()
+        val symbol = data["symbol"]?.toString()?.trim().orEmpty()
+        if (clientId.isEmpty() || symbol.isEmpty()) return
+        val allocations = lastAllocationsBySymbol[symbol] ?: return
+        allocationsByClientId[clientId] = allocations
+    }
+
+    private fun handleOrderEvent(event: TelemetryEvent) {
+        val data = event.data
+        val clientId = data["client_order_id"]?.toString()?.trim().orEmpty()
+        val orderId = numberToLong(data["order_id"]) ?: return
+        if (clientId.isNotEmpty()) {
+            clientIdByOrderId[orderId] = clientId
+        }
+    }
+
+    private fun handleFillEvent(event: TelemetryEvent) {
+        val data = event.data
+        val orderId = numberToLong(data["order_id"])
+        val clientId = data["client_order_id"]?.toString()?.trim().orEmpty()
+            .ifEmpty { orderId?.let { clientIdByOrderId[it] } ?: "" }
+        if (clientId.isEmpty()) return
+        val allocations = allocationsByClientId[clientId] ?: return
+        val side = data["side"]?.toString()?.trim().orEmpty()
+        val price = numberToDouble(data["price"]) ?: return
+        val mid = numberToDouble(data["mid_at_fill"]) ?: return
+        val qty = numberToDouble(data["qty"]) ?: return
+        if (mid <= 0.0 || qty <= 0.0) return
+
+        val slippageBps = when (side.uppercase()) {
+            "BUY" -> ((price - mid) / mid) * 10_000.0
+            "SELL" -> ((mid - price) / mid) * 10_000.0
+            else -> return
+        }
+        for (alloc in allocations) {
+            val allocQty = qty * alloc.weight
+            if (allocQty <= 0.0) continue
+            synchronized(metricsLock) {
+                val stat = slippageStats.getOrPut(alloc.strategyId) { SlippageStat() }
+                stat.qtySum += allocQty
+                stat.bpsQtySum += slippageBps * allocQty
+            }
+            if (alloc.strategyId == "survivor") {
+                val symbol = data["symbol"]?.toString()?.trim().orEmpty()
+                val fillSide = OrderSide.valueOf(side.uppercase())
+                survivorKpiTracker?.onFill(
+                    SurvivorFill(
+                        orderId = orderId ?: 0L,
+                        symbol = Symbol.of(symbol),
+                        side = fillSide,
+                        price = Price.fromDouble(price),
+                        quantity = Qty.fromDouble(allocQty),
+                        fillTimeMs = event.tsMs
+                    )
+                )
+            }
+        }
+    }
+
+    private fun parseAllocations(raw: List<*>?): List<AllocationWeight>? {
+        if (raw == null) return null
+        val parsed = raw.mapNotNull { entry ->
+            val map = entry as? Map<*, *> ?: return@mapNotNull null
+            val strategyId = map["strategy_id"]?.toString()?.trim().orEmpty()
+            if (strategyId.isEmpty()) return@mapNotNull null
+            val accepted = numberToDouble(map["accepted_delta"]) ?: return@mapNotNull null
+            AllocationWeight(strategyId, kotlin.math.abs(accepted))
+        }
+        val total = parsed.sumOf { it.weight }
+        if (total <= 0.0) return null
+        return parsed.map { it.copy(weight = it.weight / total) }
+    }
+
+    private fun numberToDouble(value: Any?): Double? {
+        return when (value) {
+            is Number -> value.toDouble()
+            is String -> value.toDoubleOrNull()
+            else -> null
+        }
+    }
+
+    private fun numberToLong(value: Any?): Long? {
+        return when (value) {
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull()
+            else -> null
+        }
+    }
+
+    private fun resolveSuperbotTelemetryMode(): String? {
+        val requested = System.getenv("TELEMETRY_MODE")?.trim()?.lowercase()
+        if (requested.isNullOrBlank()) return null
+        val forceJsonl = System.getenv("TELEMETRY_FORCE_JSONL")?.toBooleanStrictOrNull() ?: false
+        return if (requested == "jsonl" && !forceJsonl) "latest" else null
     }
 
     private fun ema(prev: Double, value: Double, alpha: Double): Double {
@@ -617,5 +778,30 @@ object Superbot {
         var spreadEma: Double = 0.0
         var vol1sEma: Double = 0.0
         var lastTs: Long = 0L
+    }
+
+    private data class AllocationWeight(val strategyId: String, val weight: Double)
+
+    private class SlippageStat {
+        var qtySum: Double = 0.0
+        var bpsQtySum: Double = 0.0
+    }
+
+    private class CompositeTelemetrySink(
+        private val sinks: List<TelemetrySink>
+    ) : TelemetrySink {
+        override fun emit(event: TelemetryEvent) {
+            sinks.forEach { it.emit(event) }
+        }
+
+        override fun close() {
+            sinks.forEach { it.close() }
+        }
+    }
+
+    private class SuperbotTelemetrySink : TelemetrySink {
+        override fun emit(event: TelemetryEvent) {
+            Superbot.onTelemetry(event)
+        }
     }
 }

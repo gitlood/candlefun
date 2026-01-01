@@ -126,6 +126,7 @@ class SimExecutionGateway(
                 data = mapOf(
                     "symbol" to fill.symbol.value,
                     "order_id" to fill.orderId,
+                    "client_order_id" to order.clientOrderId,
                     "side" to fill.side.name,
                     "price" to fill.price.value.toDouble(),
                     "qty" to fill.quantity.value.toDouble(),

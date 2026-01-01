@@ -51,7 +51,7 @@ object SurvivorTestnetRunner {
         val recordPath = System.getenv("SURVIVOR_RECORD_PATH") ?: defaultRecordPath()
         val recordTimestamped = System.getenv("RECORD_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
         val recordTruncate = System.getenv("RECORD_TRUNCATE")?.toBooleanStrictOrNull() ?: true
-        val leverage = System.getenv("LEVERAGE")?.toIntOrNull() ?: 1
+        val leverage = (System.getenv("LEVERAGE")?.toIntOrNull() ?: 1).coerceIn(1, 2)
 
         println("Survivor testnet starting...")
         println("Symbol       : $symbol")

@@ -133,7 +133,7 @@ object AvellanedaMmTestnetRunner {
                 println("No symbols available after futures filtering; aborting.")
                 return@runBlocking
             }
-            val leverage = System.getenv("LEVERAGE")?.toIntOrNull() ?: 1
+            val leverage = (System.getenv("LEVERAGE")?.toIntOrNull() ?: 1).coerceIn(1, 2)
             val liveSymbols = if (source == "FUTURES") {
                 val api = koin.get<BinanceFuturesTestNetApiService>()
                 val okSymbols = mutableListOf<String>()
@@ -262,7 +262,8 @@ object AvellanedaMmTestnetRunner {
                     maxVol1s = System.getenv("MAX_VOL_1S")?.toDoubleOrNull() ?: base.maxVol1s,
                     maxVol5s = System.getenv("MAX_VOL_5S")?.toDoubleOrNull() ?: base.maxVol5s,
                     maxVol10s = System.getenv("MAX_VOL_10S")?.toDoubleOrNull() ?: base.maxVol10s,
-                    volSpreadMultiplier = System.getenv("VOL_SPREAD_MULT")?.toDoubleOrNull()
+                    volSpreadMultiplier = System.getenv("VOL_SPREAD_MULTIPLIER")?.toDoubleOrNull()
+                        ?: System.getenv("VOL_SPREAD_MULT")?.toDoubleOrNull()
                         ?: base.volSpreadMultiplier,
                     adaptiveSpreadTargetBps = System.getenv("ADAPTIVE_SPREAD_TARGET_BPS")
                         ?.toDoubleOrNull()

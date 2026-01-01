@@ -55,7 +55,7 @@ class ExperimentManifestWriter private constructor(
             .withZone(ZoneOffset.UTC)
 
         fun fromEnv(): ExperimentManifestWriter? {
-            val enabled = System.getenv("MANIFEST_ENABLED")?.toBooleanStrictOrNull() ?: false
+            val enabled = System.getenv("MANIFEST_ENABLED")?.toBooleanStrictOrNull() ?: true
             if (!enabled) return null
             val timestamped = System.getenv("MANIFEST_TIMESTAMPED")?.toBooleanStrictOrNull() ?: false
             val path = System.getenv("MANIFEST_PATH")

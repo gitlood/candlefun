@@ -73,7 +73,7 @@ object OfiTestnetRunner {
         val kpiEveryMs = System.getenv("LOG_KPI_EVERY_MS")?.toLongOrNull() ?: 60_000L
         val pnlEveryMs = System.getenv("LOG_PNL_EVERY_MS")?.toLongOrNull() ?: 60_000L
         val fillPollMs = System.getenv("FILL_POLL_MS")?.toLongOrNull() ?: 2_000L
-        val leverage = System.getenv("LEVERAGE")?.toIntOrNull()
+        val leverage = (System.getenv("LEVERAGE")?.toIntOrNull() ?: 1).coerceIn(1, 2)
 
         println("OFI live (testnet execution) starting...")
         println("Source       : $source")
@@ -110,9 +110,7 @@ object OfiTestnetRunner {
                 .filter { filters.containsKey(it) }
 
             val api = koin.get<BinanceFuturesTestNetApiService>()
-            val liveSymbols = if (leverage == null) {
-                symbols
-            } else {
+            val liveSymbols = run {
                 val ok = mutableListOf<String>()
                 for (symbol in symbols) {
                     try {

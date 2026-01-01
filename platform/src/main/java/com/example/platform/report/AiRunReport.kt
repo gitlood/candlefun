@@ -5,7 +5,7 @@ import java.util.Locale
 
 object AiRunReportWriter {
     fun writeReport(root: File, summary: RunSummary): File {
-        val dir = File(root, "reports")
+        val dir = resolveReportDir(root)
         if (!dir.exists()) {
             dir.mkdirs()
         }
@@ -13,6 +13,15 @@ object AiRunReportWriter {
         val file = File(dir, filename)
         file.writeText(buildReport(summary))
         return file
+    }
+
+    private fun resolveReportDir(root: File): File {
+        val reportDir = System.getenv("REPORT_DIR")?.trim()
+        return if (!reportDir.isNullOrBlank()) {
+            File(reportDir, "ai_reports")
+        } else {
+            File(root, "reports/ai_reports")
+        }
     }
 
     private fun buildReport(summary: RunSummary): String {

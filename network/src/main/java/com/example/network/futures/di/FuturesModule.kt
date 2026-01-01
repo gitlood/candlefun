@@ -36,7 +36,14 @@ val futuresModule = module {
         "BINANCE_TEST_KEY"
     )
     val isTestnet = testnetApiKey != null
-    val customRest = envOrLocalProperty("BINANCE_FUTURES_REST_BASE")
+    val customRestRaw = envOrLocalProperty("BINANCE_FUTURES_REST_BASE")
+    if (!customRestRaw.isNullOrBlank()) {
+        println("BINANCE_FUTURES_REST_BASE detected: $customRestRaw")
+    }
+    val customRest = sanitizeCustomRest(customRestRaw)
+    if (!customRestRaw.isNullOrBlank() && customRest == null) {
+        System.err.println("Invalid BINANCE_FUTURES_REST_BASE ignored; remove it from env or local.properties.")
+    }
     val customWs = envOrLocalProperty("BINANCE_FUTURES_WS_BASE")
     val endpoints = when {
         !customRest.isNullOrBlank() -> {
@@ -99,6 +106,16 @@ private fun envOrLocalProperty(vararg keys: String): String? {
     val props = loadLocalProperties() ?: return null
     keys.forEach { key -> props.getProperty(key)?.let { return it } }
     return null
+}
+
+private fun sanitizeCustomRest(value: String?): String? {
+    if (value.isNullOrBlank()) return value
+    val lower = value.trim().lowercase()
+    if (lower.contains("demo.binance.com") || lower.contains("/en/") || lower.contains("/futures/")) {
+        System.err.println("Ignoring BINANCE_FUTURES_REST_BASE (looks like a web UI URL): $value")
+        return null
+    }
+    return value.trim()
 }
 
 private fun loadLocalProperties(): Properties? {

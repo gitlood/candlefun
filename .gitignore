@@ -33,3 +33,14 @@ app/orderbookscalper/*.csv
 /avellaneda_mm_dump.txt
 /ofi_kukanov_dump.txt
 /survivor.csv
+/reports/avellaneda/avellaneda_backtest.csv
+/reports/avellaneda/avellaneda_testnet.csv
+/vacuum/reports/telemetry/telemetry_vacuum_backtest_latest.json
+/vacuum/reports/telemetry/telemetry_vacuum_testnet_latest.json
+/pairs/reports/telemetry/telemetry_pairs_backtest_latest.json
+/pairs/reports/telemetry/telemetry_pairs_testnet_latest.json
+/ofi-kukanov/reports/telemetry/telemetry_ofi_backtest_latest.json
+/ofi-kukanov/reports/telemetry/telemetry_ofi_testnet_latest.json
+/avellaneda-live/reports/telemetry/telemetry_avellaneda_testnet_latest.json
+/avellaneda-mm/reports/telemetry/telemetry_avellaneda_backtest_latest.json
+/reports/telemetry/telemetry_survivor_backtest_latest.json

@@ -29,6 +29,13 @@ tasks.register<JavaExec>("runLive") {
     mainClass.set("com.example.ofi.kukanov.OfiLiveRunner")
 }
 
+tasks.register<JavaExec>("runBacktest") {
+    group = "application"
+    description = "Run OFI backtest runner"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.example.ofi.kukanov.OfiBacktestRunner")
+}
+
 tasks.register<JavaExec>("runTestnet") {
     group = "application"
     description = "Run OFI live testnet execution (futures)"

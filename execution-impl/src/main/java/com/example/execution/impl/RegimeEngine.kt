@@ -58,7 +58,7 @@ class RegimeEngine(
         fun fromEnv(): RegimeEngine {
             val minSpread = System.getenv("REGIME_MIN_SPREAD_BPS")?.toDoubleOrNull() ?: 1.5
             val maxSpread = System.getenv("REGIME_MAX_SPREAD_BPS")?.toDoubleOrNull() ?: 30.0
-            val maxVol = System.getenv("REGIME_MAX_VOL_1S")?.toDoubleOrNull() ?: 0.02
+            val maxVol = System.getenv("REGIME_MAX_VOL_1S")?.toDoubleOrNull() ?: 0.01
             val maxTradeImb = System.getenv("REGIME_MAX_TRADE_IMB_1S")?.toDoubleOrNull() ?: 1.0
             val minTradeCount = System.getenv("REGIME_MIN_TRADE_COUNT_1S")?.toIntOrNull() ?: 10
             return RegimeEngine(

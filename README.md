@@ -141,7 +141,8 @@ Avellaneda runners can emit per-symbol CSV snapshots for quick review and tuning
 3.  Logging & telemetry:
 
     * Logs: `LOG_EVERY_TICKS=1000`, `LOG_INTENTS=true`, `LOG_REGIME=false`. Lower `LOG_EVERY_TICKS` for faster ticks.
-    * Telemetry writes to `reports/telemetry/telemetry_superbot_latest.json` (overridable via `TELEMETRY_DIR`/`TELEMETRY_PATH`).
+    * Telemetry defaults to `TELEMETRY_MODE=latest` and writes to `reports/telemetry/telemetry_superbot_latest.json` (overridable via `TELEMETRY_DIR`/`TELEMETRY_PATH`).
+      * Telemetry will ignore `TELEMETRY_MODE=jsonl` unless `TELEMETRY_FORCE_JSONL=true` is set (prevents giant JSONL files by default).
       * Emits `config_snapshot`, `health_summary`, `kpi_snapshot`.
       * Switch to append mode with `TELEMETRY_MODE=jsonl` and/or timestamped files with `TELEMETRY_TIMESTAMPED=true`.
 ---

@@ -68,8 +68,11 @@ class AvellanedaMmStrategy(
             )
         )
         if (gateReason != null) {
-            if (config.logGateDecisions && gateReason != lastGateReason) {
-                println("gate=${config.symbol} reason=$gateReason")
+            if (gateReason != lastGateReason) {
+                emitRegimeGate(now, gateReason, spreadPct, mid)
+                if (config.logGateDecisions) {
+                    println("gate=${config.symbol} reason=$gateReason")
+                }
                 lastGateReason = gateReason
             }
             lastGateMs = now
@@ -79,8 +82,11 @@ class AvellanedaMmStrategy(
         }
         lastGateReason = null
         if (now - lastGateMs < config.gateCooldownMs) {
-            if (config.logGateDecisions && lastGateReason != "cooldown") {
-                println("gate=${config.symbol} reason=cooldown")
+            if (lastGateReason != "cooldown") {
+                emitRegimeGate(now, "cooldown", spreadPct, mid)
+                if (config.logGateDecisions) {
+                    println("gate=${config.symbol} reason=cooldown")
+                }
                 lastGateReason = "cooldown"
             }
             cancelAll()
@@ -255,6 +261,20 @@ class AvellanedaMmStrategy(
             )
         )
         return placed.orderId
+    }
+
+    private fun emitRegimeGate(tsMs: Long, reason: String, spreadPct: Double, mid: Double) {
+        Telemetry.emit(
+            type = "regime_gate",
+            tsMs = tsMs,
+            data = mapOf(
+                "strategy_id" to "avellaneda_mm",
+                "symbol" to config.symbol,
+                "reason" to reason,
+                "spread_pct" to spreadPct,
+                "mid" to mid
+            )
+        )
     }
 
     private suspend fun cancelAll() {
