@@ -23,6 +23,9 @@ data class PairsConfig(
     val minNotionalA: Double? = null,
     val minNotionalB: Double? = null,
     val orderTtlMs: Long = 5_000L,
+    val hedgeRepairDelayMs: Long = 1_000L,
+    val hedgeRepairCooldownMs: Long = 1_000L,
+    val hedgeRepairMinFillPct: Double = 0.5,
     val makerFeePct: Double = 0.0002,
     val takerFeePct: Double = 0.0004,
     val tailZ: Double = 4.0,
@@ -45,6 +48,9 @@ data class PairsConfig(
         require(qtyStepA > 0.0) { "qtyStepA must be > 0" }
         require(qtyStepB > 0.0) { "qtyStepB must be > 0" }
         require(orderTtlMs >= 0L) { "orderTtlMs must be >= 0" }
+        require(hedgeRepairDelayMs >= 0L) { "hedgeRepairDelayMs must be >= 0" }
+        require(hedgeRepairCooldownMs >= 0L) { "hedgeRepairCooldownMs must be >= 0" }
+        require(hedgeRepairMinFillPct >= 0.0) { "hedgeRepairMinFillPct must be >= 0" }
         require(makerFeePct >= 0.0) { "makerFeePct must be >= 0" }
         require(takerFeePct >= 0.0) { "takerFeePct must be >= 0" }
         require(tailZ > 0.0) { "tailZ must be > 0" }

@@ -36,7 +36,14 @@ object SurvivorLiveRunner {
             )
         )
         val policy = ExecutionPolicy(gateway)
-        val engine = SurvivorPortfolioEngine(gateway, allocator, policy, strategy)
+        val engine = SurvivorPortfolioEngine(
+            gateway,
+            allocator,
+            policy,
+            strategy,
+            heartbeatMs = config.rebalanceIntervalMs,
+            staleFeedMs = config.staleFeedMs
+        )
         val tailer = SurvivorCsvTailer(file, pollMs = pollMs)
         val telemetryPath = Telemetry.resolveReportPathFromEnv("survivor_live", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
@@ -57,7 +64,9 @@ object SurvivorLiveRunner {
         )
 
         var lastKpiMs = 0L
+        var heartbeatJob: kotlinx.coroutines.Job? = null
         try {
+            heartbeatJob = engine.startHeartbeat(this)
             tailer.stream().collect { snap ->
                 engine.onSnapshot(snap)
                 val now = snap.timestampMs
@@ -68,6 +77,7 @@ object SurvivorLiveRunner {
                 }
             }
         } finally {
+            heartbeatJob?.cancel()
             val summary = kpi.summary()
             SurvivorReport.print(summary, "SURVIVOR LIVE KPI")
             writeSurvivorLiveSummary(
@@ -102,6 +112,10 @@ object SurvivorLiveRunner {
                 ?: base.entryFundingThreshold,
             exitFundingThreshold = System.getenv("EXIT_FUNDING")?.toDoubleOrNull()
                 ?: base.exitFundingThreshold,
+            entryBasisAbsPctMax = System.getenv("ENTRY_BASIS_PCT_MAX")?.toDoubleOrNull()
+                ?: base.entryBasisAbsPctMax,
+            maxTimeToFundingForTakerMs = System.getenv("MAX_TIME_TO_FUNDING_TAKER_MS")?.toLongOrNull()
+                ?: base.maxTimeToFundingForTakerMs,
             basisStopAbsPct = System.getenv("BASIS_STOP_PCT")?.toDoubleOrNull()
                 ?: base.basisStopAbsPct,
             maxVolatility = System.getenv("MAX_VOL")?.toDoubleOrNull() ?: base.maxVolatility,
@@ -110,6 +124,9 @@ object SurvivorLiveRunner {
             oiWindowMs = System.getenv("OI_WINDOW_MS")?.toLongOrNull() ?: base.oiWindowMs,
             maxHoldMs = System.getenv("MAX_HOLD_MS")?.toLongOrNull() ?: base.maxHoldMs,
             orderTtlMs = System.getenv("ORDER_TTL_MS")?.toLongOrNull() ?: base.orderTtlMs,
+            rebalanceIntervalMs = System.getenv("REBALANCE_INTERVAL_MS")?.toLongOrNull()
+                ?: base.rebalanceIntervalMs,
+            staleFeedMs = System.getenv("STALE_FEED_MS")?.toLongOrNull() ?: base.staleFeedMs,
             makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: base.makerFeePct,
             takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: base.takerFeePct,
             borrowFeePctPerDay = System.getenv("BORROW_FEE_PCT_DAY")?.toDoubleOrNull()

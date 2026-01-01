@@ -102,7 +102,14 @@ object SurvivorTestnetRunner {
                 )
             )
             val policy = ExecutionPolicy(gateway)
-            val engine = SurvivorPortfolioEngine(gateway, allocator, policy, strategy)
+            val engine = SurvivorPortfolioEngine(
+                gateway,
+                allocator,
+                policy,
+                strategy,
+                heartbeatMs = survivorConfig.rebalanceIntervalMs,
+                staleFeedMs = survivorConfig.staleFeedMs
+            )
             val recorder = if (recordEnabled) {
                 val resolved = recordOutputPath ?: applyTimestamp(recordPath, recordTimestamped)
                 val outFile = File(resolved)
@@ -159,12 +166,14 @@ object SurvivorTestnetRunner {
             }
         }
             var lastKpiMs = 0L
+            var heartbeatJob: kotlinx.coroutines.Job? = null
             var lastPosPollMs = 0L
             val userData = koin.get<FuturesUserDataService>()
             val userWs = koin.get<FuturesWebSocketService>()
             FuturesUserStreamTelemetry.start(this, userData, userWs)
             val flow: Flow<MarketState> = repo.streamMarketState(listOf(symbol.asSymbol()), config)
             try {
+                heartbeatJob = engine.startHeartbeat(this)
                 flow.collect { state ->
                     val premium = dataMutex.withLock { latestPremium }
                     if (premium == null) return@collect
@@ -187,6 +196,7 @@ object SurvivorTestnetRunner {
                     }
                 }
             } finally {
+                heartbeatJob?.cancel()
                 val summary = kpi.summary()
                 SurvivorReport.print(summary, "SURVIVOR TESTNET KPI")
                 writeSurvivorTestnetSummary(
@@ -287,6 +297,10 @@ object SurvivorTestnetRunner {
                 ?: base.entryFundingThreshold,
             exitFundingThreshold = System.getenv("EXIT_FUNDING")?.toDoubleOrNull()
                 ?: base.exitFundingThreshold,
+            entryBasisAbsPctMax = System.getenv("ENTRY_BASIS_PCT_MAX")?.toDoubleOrNull()
+                ?: base.entryBasisAbsPctMax,
+            maxTimeToFundingForTakerMs = System.getenv("MAX_TIME_TO_FUNDING_TAKER_MS")?.toLongOrNull()
+                ?: base.maxTimeToFundingForTakerMs,
             basisStopAbsPct = System.getenv("BASIS_STOP_PCT")?.toDoubleOrNull()
                 ?: base.basisStopAbsPct,
             maxVolatility = System.getenv("MAX_VOL")?.toDoubleOrNull() ?: base.maxVolatility,
@@ -295,6 +309,9 @@ object SurvivorTestnetRunner {
             oiWindowMs = System.getenv("OI_WINDOW_MS")?.toLongOrNull() ?: base.oiWindowMs,
             maxHoldMs = System.getenv("MAX_HOLD_MS")?.toLongOrNull() ?: base.maxHoldMs,
             orderTtlMs = System.getenv("ORDER_TTL_MS")?.toLongOrNull() ?: base.orderTtlMs,
+            rebalanceIntervalMs = System.getenv("REBALANCE_INTERVAL_MS")?.toLongOrNull()
+                ?: base.rebalanceIntervalMs,
+            staleFeedMs = System.getenv("STALE_FEED_MS")?.toLongOrNull() ?: base.staleFeedMs,
             makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: base.makerFeePct,
             takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: base.takerFeePct,
             borrowFeePctPerDay = System.getenv("BORROW_FEE_PCT_DAY")?.toDoubleOrNull()

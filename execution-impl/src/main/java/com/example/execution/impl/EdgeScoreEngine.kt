@@ -2,7 +2,6 @@ package com.example.execution.impl
 
 import com.example.execution.domain.StrategyIntent
 import kotlin.math.pow
-import kotlin.math.pow
 
 data class EdgeScoreConfig(
     val baseline: Double = 0.5,

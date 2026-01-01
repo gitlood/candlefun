@@ -61,7 +61,14 @@ object SurvivorBacktestRunner {
             )
         )
         val policy = ExecutionPolicy(gateway)
-        val engine = SurvivorPortfolioEngine(gateway, allocator, policy, strategy)
+        val engine = SurvivorPortfolioEngine(
+            gateway,
+            allocator,
+            policy,
+            strategy,
+            heartbeatMs = config.rebalanceIntervalMs,
+            staleFeedMs = config.staleFeedMs
+        )
         val replayer = SurvivorCsvReplayer(file, speedup = speedup)
         val telemetryPath = Telemetry.resolveReportPathFromEnv("survivor_backtest", defaultEnabled = true)
         val manifestWriter = ExperimentManifestWriter.fromEnv()
@@ -85,24 +92,30 @@ object SurvivorBacktestRunner {
         )
 
         var lastKpiMs = 0L
-        replayer.stream().collect { snap ->
-            engine.onSnapshot(snap)
-            val now = snap.timestampMs
-            if (lastKpiMs == 0L) lastKpiMs = now
-            if (now - lastKpiMs >= logEveryMs) {
-                SurvivorReport.print(kpi.summary(), "SURVIVOR BACKTEST KPI")
-                lastKpiMs = now
+        var heartbeatJob: kotlinx.coroutines.Job? = null
+        try {
+            heartbeatJob = engine.startHeartbeat(this)
+            replayer.stream().collect { snap ->
+                engine.onSnapshot(snap)
+                val now = snap.timestampMs
+                if (lastKpiMs == 0L) lastKpiMs = now
+                if (now - lastKpiMs >= logEveryMs) {
+                    SurvivorReport.print(kpi.summary(), "SURVIVOR BACKTEST KPI")
+                    lastKpiMs = now
+                }
             }
+        } finally {
+            heartbeatJob?.cancel()
+            val finalSummary = kpi.summary()
+            SurvivorReport.print(finalSummary, "SURVIVOR BACKTEST KPI")
+            writeSurvivorSummary(
+                config = config,
+                summary = finalSummary,
+                telemetryPath = telemetryPath,
+                manifestPath = manifestWriter?.path(),
+                mode = "backtest"
+            )
         }
-        val finalSummary = kpi.summary()
-        SurvivorReport.print(finalSummary, "SURVIVOR BACKTEST KPI")
-        writeSurvivorSummary(
-            config = config,
-            summary = finalSummary,
-            telemetryPath = telemetryPath,
-            manifestPath = manifestWriter?.path(),
-            mode = "backtest"
-        )
     }
 
     private fun writeSurvivorSummary(
@@ -174,6 +187,10 @@ object SurvivorBacktestRunner {
                 ?: base.entryFundingThreshold,
             exitFundingThreshold = System.getenv("EXIT_FUNDING")?.toDoubleOrNull()
                 ?: base.exitFundingThreshold,
+            entryBasisAbsPctMax = System.getenv("ENTRY_BASIS_PCT_MAX")?.toDoubleOrNull()
+                ?: base.entryBasisAbsPctMax,
+            maxTimeToFundingForTakerMs = System.getenv("MAX_TIME_TO_FUNDING_TAKER_MS")?.toLongOrNull()
+                ?: base.maxTimeToFundingForTakerMs,
             basisStopAbsPct = System.getenv("BASIS_STOP_PCT")?.toDoubleOrNull()
                 ?: base.basisStopAbsPct,
             maxVolatility = System.getenv("MAX_VOL")?.toDoubleOrNull() ?: base.maxVolatility,
@@ -182,6 +199,9 @@ object SurvivorBacktestRunner {
             oiWindowMs = System.getenv("OI_WINDOW_MS")?.toLongOrNull() ?: base.oiWindowMs,
             maxHoldMs = System.getenv("MAX_HOLD_MS")?.toLongOrNull() ?: base.maxHoldMs,
             orderTtlMs = System.getenv("ORDER_TTL_MS")?.toLongOrNull() ?: base.orderTtlMs,
+            rebalanceIntervalMs = System.getenv("REBALANCE_INTERVAL_MS")?.toLongOrNull()
+                ?: base.rebalanceIntervalMs,
+            staleFeedMs = System.getenv("STALE_FEED_MS")?.toLongOrNull() ?: base.staleFeedMs,
             makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: base.makerFeePct,
             takerFeePct = System.getenv("TAKER_FEE_PCT")?.toDoubleOrNull() ?: base.takerFeePct,
             borrowFeePctPerDay = System.getenv("BORROW_FEE_PCT_DAY")?.toDoubleOrNull()

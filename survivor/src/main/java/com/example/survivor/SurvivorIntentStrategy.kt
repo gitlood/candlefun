@@ -45,6 +45,7 @@ class SurvivorIntentStrategy(
             return emptyList()
         }
         if (side == SurvivorSide.FLAT && desired != SurvivorSide.FLAT) {
+            if (abs(snapshot.basisPct) > config.entryBasisAbsPctMax) return emptyList()
             val confidence = entryConfidence(snapshot)
             return listOf(enterIntent(desired, snapshot, confidence))
         } else if (side != SurvivorSide.FLAT) {
@@ -86,6 +87,9 @@ class SurvivorIntentStrategy(
     ): StrategyIntent {
         val orderSide = if (desired == SurvivorSide.LONG_PERP) 1.0 else -1.0
         val signedQty = orderSide * config.orderQty
+        val timeToFundingMs = snapshot.nextFundingTimeMs - snapshot.timestampMs
+        val preferMaker = timeToFundingMs > config.maxTimeToFundingForTakerMs
+        val urgency = if (preferMaker) IntentUrgency.LOW else IntentUrgency.MEDIUM
         side = desired
         entryTimeMs = snapshot.timestampMs
         Telemetry.emit(
@@ -95,8 +99,8 @@ class SurvivorIntentStrategy(
                 "strategy_id" to "survivor",
                 "symbol" to config.symbol,
                 "desired_delta" to signedQty,
-                "urgency" to "LOW",
-                "prefer_maker" to true,
+                "urgency" to urgency.name,
+                "prefer_maker" to preferMaker,
                 "ttl_ms" to config.orderTtlMs,
                 "reason" to "funding_entry",
                 "confidence" to confidence
@@ -106,8 +110,8 @@ class SurvivorIntentStrategy(
             strategyId = "survivor",
             symbol = Symbol.of(config.symbol),
             desiredDelta = Qty.fromDouble(signedQty),
-            urgency = IntentUrgency.LOW,
-            preferMaker = true,
+            urgency = urgency,
+            preferMaker = preferMaker,
             ttlMs = config.orderTtlMs,
             confidence = confidence,
             riskBudgetRequest = abs(signedQty),
@@ -165,33 +169,4 @@ class SurvivorIntentStrategy(
         val strength = abs(snapshot.fundingRate) / threshold
         return strength.coerceIn(0.0, 1.0)
     }
-}
-
-private class RollingOiWindow(windowMs: Long) {
-    private val windowMs = windowMs
-    private val samples = ArrayDeque<TimedOi>(64)
-    private var sum = 0.0
-
-    fun add(timestampMs: Long, oi: Double) {
-        samples.addLast(TimedOi(timestampMs, oi))
-        sum += oi
-        trim(timestampMs)
-    }
-
-    fun isJumping(current: Double, maxJumpPct: Double): Boolean {
-        if (samples.isEmpty()) return false
-        val mean = sum / samples.size
-        if (mean <= 0.0) return false
-        val pct = abs(current - mean) / mean
-        return pct > maxJumpPct
-    }
-
-    private fun trim(nowMs: Long) {
-        while (samples.isNotEmpty() && samples.first().timestampMs < nowMs - windowMs) {
-            val s = samples.removeFirst()
-            sum -= s.oi
-        }
-    }
-
-    private data class TimedOi(val timestampMs: Long, val oi: Double)
 }

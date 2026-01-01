@@ -26,6 +26,9 @@ class PairsIntentStrategy(
     private var trendCount = 0
     private var lastZ: Double? = null
     private var lastSign: Int = 0
+    private var targetQtyA: Double? = null
+    private var targetQtyB: Double? = null
+    private var lastRepairMs: Long = 0L
 
     private var lastStateA: MarketState? = null
     private var lastStateB: MarketState? = null
@@ -74,6 +77,8 @@ class PairsIntentStrategy(
                 return enter(nextSide, a, b, signal)
             }
         } else {
+            val repair = maybeRepair(context, now)
+            if (repair.isNotEmpty()) return repair
             if (shouldExit(a, b, signal, now)) {
                 return exit(a, b, signal)
             }
@@ -150,6 +155,8 @@ class PairsIntentStrategy(
 
         this.side = side
         entryTimeMs = signal.timestampMs
+        targetQtyA = qtyA
+        targetQtyB = qtyB
         val confidence = entryConfidence(signal)
         val intents = listOf(
             StrategyIntent(
@@ -220,6 +227,8 @@ class PairsIntentStrategy(
 
         this.side = PairSide.FLAT
         entryTimeMs = null
+        targetQtyA = null
+        targetQtyB = null
         val intents = listOf(
             StrategyIntent(
                 strategyId = id,
@@ -273,6 +282,95 @@ class PairsIntentStrategy(
             )
         )
         return intents
+    }
+
+    private fun maybeRepair(context: StrategyContext, nowMs: Long): List<StrategyIntent> {
+        val entryMs = entryTimeMs ?: return emptyList()
+        if (config.hedgeRepairDelayMs > 0L && nowMs - entryMs < config.hedgeRepairDelayMs) {
+            return emptyList()
+        }
+        if (config.hedgeRepairCooldownMs > 0L && nowMs - lastRepairMs < config.hedgeRepairCooldownMs) {
+            return emptyList()
+        }
+        val targetA = targetQtyA ?: return emptyList()
+        val targetB = targetQtyB ?: return emptyList()
+        val posA = context.positionQty(Symbol.of(config.symbolA))
+        val posB = context.positionQty(Symbol.of(config.symbolB))
+        val filledA = kotlin.math.abs(posA) >= targetA * config.hedgeRepairMinFillPct
+        val filledB = kotlin.math.abs(posB) >= targetB * config.hedgeRepairMinFillPct
+        if ((filledA && filledB) || (!filledA && !filledB)) return emptyList()
+
+        val (sideA, sideB) = if (side == PairSide.LONG_A_SHORT_B) {
+            OrderSide.BUY to OrderSide.SELL
+        } else {
+            OrderSide.SELL to OrderSide.BUY
+        }
+
+        val intents = ArrayList<StrategyIntent>(2)
+        if (!filledA) {
+            val desired = desiredDeltaForRepair(posA, targetA, sideA)
+            if (desired != 0.0) {
+                intents.add(
+                    StrategyIntent(
+                        strategyId = id,
+                        symbol = Symbol.of(config.symbolA),
+                        desiredDelta = Qty.fromDouble(desired),
+                        urgency = IntentUrgency.HIGH,
+                        preferMaker = false,
+                        ttlMs = config.orderTtlMs,
+                        confidence = 1.0,
+                        riskBudgetRequest = kotlin.math.abs(desired),
+                        reason = "pairs_hedge_repair"
+                    )
+                )
+            }
+        }
+        if (!filledB) {
+            val desired = desiredDeltaForRepair(posB, targetB, sideB)
+            if (desired != 0.0) {
+                intents.add(
+                    StrategyIntent(
+                        strategyId = id,
+                        symbol = Symbol.of(config.symbolB),
+                        desiredDelta = Qty.fromDouble(desired),
+                        urgency = IntentUrgency.HIGH,
+                        preferMaker = false,
+                        ttlMs = config.orderTtlMs,
+                        confidence = 1.0,
+                        riskBudgetRequest = kotlin.math.abs(desired),
+                        reason = "pairs_hedge_repair"
+                    )
+                )
+            }
+        }
+        if (intents.isNotEmpty()) {
+            lastRepairMs = nowMs
+            intents.forEach { intent ->
+                Telemetry.emit(
+                    type = "strategy_intent",
+                    tsMs = nowMs,
+                    data = mapOf(
+                        "strategy_id" to id,
+                        "symbol" to intent.symbol.value,
+                        "desired_delta" to intent.desiredDelta.value.toDouble(),
+                        "urgency" to "HIGH",
+                        "prefer_maker" to false,
+                        "ttl_ms" to config.orderTtlMs,
+                        "reason" to "pairs_hedge_repair",
+                        "confidence" to 1.0
+                    )
+                )
+            }
+        }
+        return intents
+    }
+
+    private fun desiredDeltaForRepair(currentQty: Double, targetQty: Double, side: OrderSide): Double {
+        val sign = if (side == OrderSide.BUY) 1.0 else -1.0
+        val target = sign * targetQty
+        val remaining = target - currentQty
+        if (kotlin.math.abs(remaining) < targetQty * 0.1) return 0.0
+        return remaining
     }
 
     private fun priceForSide(state: MarketState, side: OrderSide): Double? {

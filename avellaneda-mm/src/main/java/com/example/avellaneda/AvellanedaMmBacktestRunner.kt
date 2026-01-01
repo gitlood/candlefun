@@ -126,6 +126,14 @@ object AvellanedaMmBacktestRunner {
                     ?: base.adaptiveSpreadTargetBps,
                 adaptiveSpreadUpdateMs = System.getenv("ADAPTIVE_SPREAD_UPDATE_MS")?.toLongOrNull()
                     ?: base.adaptiveSpreadUpdateMs,
+                toxicitySpikeAdvBps = System.getenv("TOXICITY_SPIKE_ADV_BPS")?.toDoubleOrNull()
+                    ?: base.toxicitySpikeAdvBps,
+                turtleStrikeWindowMs = System.getenv("TURTLE_STRIKE_WINDOW_MS")?.toLongOrNull()
+                    ?: base.turtleStrikeWindowMs,
+                turtleStrikeThreshold = System.getenv("TURTLE_STRIKE_THRESHOLD")?.toIntOrNull()
+                    ?: base.turtleStrikeThreshold,
+                turtlePauseMs = System.getenv("TURTLE_PAUSE_MS")?.toLongOrNull()
+                    ?: base.turtlePauseMs,
                 quoteStyle = parseQuoteStyle(System.getenv("QUOTE_STYLE")),
                 logGateDecisions = System.getenv("LOG_GATES")?.toBooleanStrictOrNull() ?: base.logGateDecisions,
                 makerFeePct = System.getenv("MAKER_FEE_PCT")?.toDoubleOrNull() ?: base.makerFeePct

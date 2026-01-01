@@ -11,7 +11,8 @@ import java.nio.file.StandardCopyOption
 data class TelemetryEvent(
     val type: String,
     val tsMs: Long,
-    val data: Map<String, Any?> = emptyMap()
+    val data: Map<String, Any?> = emptyMap(),
+    val schemaVersion: Int = 1
 )
 
 interface TelemetrySink {
@@ -56,6 +57,7 @@ class JsonlTelemetrySink(private val file: File) : TelemetrySink {
             mapOf(
                 "type" to event.type,
                 "ts_ms" to event.tsMs,
+                "schema_version" to event.schemaVersion,
                 "data" to event.data
             )
         )
@@ -127,6 +129,7 @@ class LatestTelemetrySink(
                 mapOf(
                     "type" to event.type,
                     "ts_ms" to event.tsMs,
+                    "schema_version" to event.schemaVersion,
                     "data" to event.data
                 )
             }
@@ -155,6 +158,81 @@ class LatestTelemetrySink(
 
 }
 
+enum class DropPolicy {
+    DROP_NEW,
+    DROP_OLD
+}
+
+class AsyncTelemetrySink(
+    private val delegate: TelemetrySink,
+    private val maxQueueSize: Int,
+    private val batchSize: Int,
+    private val dropPolicy: DropPolicy
+) : TelemetrySink {
+    private val lock = Object()
+    private val queue = ArrayDeque<TelemetryEvent>(maxQueueSize.coerceAtLeast(16))
+    @Volatile
+    private var closed = false
+    private var dropped = 0L
+    private val worker = Thread(::drainLoop).apply {
+        isDaemon = true
+        name = "telemetry-writer"
+        start()
+    }
+
+    override fun emit(event: TelemetryEvent) {
+        synchronized(lock) {
+            if (closed) return
+            if (maxQueueSize > 0 && queue.size >= maxQueueSize) {
+                if (dropPolicy == DropPolicy.DROP_OLD && queue.isNotEmpty()) {
+                    queue.removeFirst()
+                    queue.addLast(event)
+                } else {
+                    dropped++
+                }
+                return
+            }
+            queue.addLast(event)
+            lock.notifyAll()
+        }
+    }
+
+    override fun close() {
+        synchronized(lock) {
+            closed = true
+            lock.notifyAll()
+        }
+        worker.join(2_000L)
+        if (dropped > 0) {
+            delegate.emit(
+                TelemetryEvent(
+                    type = "telemetry_drop",
+                    tsMs = System.currentTimeMillis(),
+                    data = mapOf("dropped" to dropped)
+                )
+            )
+        }
+        delegate.close()
+    }
+
+    private fun drainLoop() {
+        while (true) {
+            val batch = ArrayList<TelemetryEvent>(batchSize.coerceAtLeast(1))
+            synchronized(lock) {
+                while (queue.isEmpty() && !closed) {
+                    lock.wait(250L)
+                }
+                if (queue.isEmpty() && closed) return
+                val take = if (batchSize <= 0) queue.size else minOf(batchSize, queue.size)
+                repeat(take) { batch.add(queue.removeFirst()) }
+            }
+            for (event in batch) {
+                delegate.emit(event)
+            }
+        }
+    }
+}
+
 object TelemetrySinks {
     fun fromEnv(mode: String, defaultEnabled: Boolean = false): TelemetrySink {
         val enabled = resolveEnabled(defaultEnabled)
@@ -170,7 +248,7 @@ object TelemetrySinks {
         if (truncate && file.exists()) {
             file.delete()
         }
-        return when (telemetryMode) {
+        val base = when (telemetryMode) {
             "latest" -> LatestTelemetrySink(file, resolveLatestTypes())
             else -> {
                 val baseSink = JsonlTelemetrySink(file)
@@ -178,6 +256,13 @@ object TelemetrySinks {
                 if (dedupeTypes.isEmpty()) baseSink else DedupeTelemetrySink(baseSink, dedupeTypes)
             }
         }
+        if (!resolveAsyncEnabled()) return base
+        return AsyncTelemetrySink(
+            delegate = base,
+            maxQueueSize = resolveAsyncQueueSize(),
+            batchSize = resolveAsyncBatchSize(),
+            dropPolicy = resolveAsyncDropPolicy()
+        )
     }
 
     fun resolvePathFromEnv(mode: String, defaultEnabled: Boolean = false): String? {
@@ -252,6 +337,26 @@ object TelemetrySinks {
 
     private fun resolveLogPath(): Boolean {
         return System.getenv("TELEMETRY_LOG_PATH")?.toBooleanStrictOrNull() ?: true
+    }
+
+    private fun resolveAsyncEnabled(): Boolean {
+        return System.getenv("TELEMETRY_ASYNC")?.toBooleanStrictOrNull() ?: true
+    }
+
+    private fun resolveAsyncQueueSize(): Int {
+        return System.getenv("TELEMETRY_ASYNC_QUEUE")?.toIntOrNull() ?: 10_000
+    }
+
+    private fun resolveAsyncBatchSize(): Int {
+        return System.getenv("TELEMETRY_ASYNC_BATCH")?.toIntOrNull() ?: 50
+    }
+
+    private fun resolveAsyncDropPolicy(): DropPolicy {
+        val raw = System.getenv("TELEMETRY_DROP_POLICY")?.trim()?.lowercase()
+        return when (raw) {
+            "drop_old", "drop_oldest" -> DropPolicy.DROP_OLD
+            else -> DropPolicy.DROP_NEW
+        }
     }
 }
 

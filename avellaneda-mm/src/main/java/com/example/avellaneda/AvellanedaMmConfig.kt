@@ -27,6 +27,10 @@ data class AvellanedaMmConfig(
     val volSpreadMultiplier: Double,
     val adaptiveSpreadTargetBps: Double?,
     val adaptiveSpreadUpdateMs: Long,
+    val toxicitySpikeAdvBps: Double?,
+    val turtleStrikeWindowMs: Long,
+    val turtleStrikeThreshold: Int,
+    val turtlePauseMs: Long,
     val quoteStyle: QuoteStyle,
     val logGateDecisions: Boolean,
     val makerFeePct: Double
@@ -60,6 +64,10 @@ data class AvellanedaMmConfig(
                 volSpreadMultiplier = 0.0,
                 adaptiveSpreadTargetBps = null,
                 adaptiveSpreadUpdateMs = 10_000L,
+                toxicitySpikeAdvBps = 5.0,
+                turtleStrikeWindowMs = 30_000L,
+                turtleStrikeThreshold = 3,
+                turtlePauseMs = 10_000L,
                 quoteStyle = QuoteStyle.IMPROVE,
                 logGateDecisions = false,
                 makerFeePct = 0.0

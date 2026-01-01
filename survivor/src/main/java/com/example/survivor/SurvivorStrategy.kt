@@ -60,6 +60,7 @@ class SurvivorStrategy(
             return
         }
         if (side == SurvivorSide.FLAT && desired != SurvivorSide.FLAT) {
+            if (abs(snapshot.basisPct) > config.entryBasisAbsPctMax) return
             enter(desired, snapshot)
         } else if (side != SurvivorSide.FLAT) {
             if (shouldExit(snapshot)) {
@@ -107,6 +108,8 @@ class SurvivorStrategy(
         val price = snapshot.markPrice
         val qty = config.orderQty
         val signedQty = if (orderSide == OrderSide.BUY) qty else -qty
+        val timeToFundingMs = snapshot.nextFundingTimeMs - snapshot.timestampMs
+        val preferMaker = timeToFundingMs > config.maxTimeToFundingForTakerMs
         Telemetry.emit(
             type = "strategy_intent",
             tsMs = snapshot.timestampMs,
@@ -115,7 +118,7 @@ class SurvivorStrategy(
                 "symbol" to config.symbol,
                 "desired_delta" to signedQty,
                 "urgency" to "LOW",
-                "prefer_maker" to true,
+                "prefer_maker" to preferMaker,
                 "ttl_ms" to config.orderTtlMs,
                 "limit_price" to price,
                 "reason" to "funding_entry"
@@ -127,7 +130,7 @@ class SurvivorStrategy(
             type = OrderType.LIMIT,
             quantity = Qty.fromDouble(qty),
             price = Price.fromDouble(price),
-            timeInForce = TimeInForce.GTC,
+            timeInForce = if (preferMaker) TimeInForce.GTX else TimeInForce.IOC,
             clientOrderId = "survivor_${config.symbol}_${orderSide.name}_${snapshot.timestampMs}"
         )
         val order = gateway.placeOrder(request)

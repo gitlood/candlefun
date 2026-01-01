@@ -20,6 +20,9 @@ class AvellanedaMmIntentStrategy(
     private var lastActionMs: Long = 0L
     private var lastGateReason: String? = null
     private var lastGateMs: Long = 0L
+    private var turtleUntilMs: Long = 0L
+    private var lastAdvBps: Double = 0.0
+    private val turtleStrikes = ArrayDeque<Long>()
     private var adaptiveMinSpreadPct: Double = config.minSpreadPct
     private var lastAdaptiveUpdateMs: Long = 0L
     private val gate = RegimeGate(config)
@@ -34,6 +37,11 @@ class AvellanedaMmIntentStrategy(
         val spread = state.spread ?: return emptyList()
         if (spread <= 0.0) return emptyList()
         val spreadPct = spread / mid
+        val advBpsRaw = adverseBpsProvider?.invoke(config.symbol) ?: 0.0
+        if (checkTurtleMode(now, advBpsRaw)) {
+            lastActionMs = now
+            return emptyList()
+        }
         gate.addSpreadSample(now, spreadPct)
         val gateReason = gate.check(state, spreadPct, now)
         Telemetry.emit(
@@ -46,7 +54,8 @@ class AvellanedaMmIntentStrategy(
                 "mid" to mid,
                 "vol_1s" to state.vol1s,
                 "depth_imbalance" to state.depthImbalance,
-                "gate_reason" to gateReason
+                "gate_reason" to gateReason,
+                "adv_bps" to advBpsRaw
             )
         )
         if (gateReason != null) {
@@ -69,7 +78,7 @@ class AvellanedaMmIntentStrategy(
         }
 
         val positionQty = context.positionQty(Symbol.of(config.symbol))
-        updateAdaptiveSpread(now)
+        updateAdaptiveSpread(now, advBpsRaw)
         val quote = quoter.compute(state, positionQty, adaptiveMinSpreadPct) ?: return emptyList()
         val bid = quote.bid
         val ask = quote.ask
@@ -152,12 +161,11 @@ class AvellanedaMmIntentStrategy(
         return (edge * inventoryPenalty).coerceIn(0.0, 1.0)
     }
 
-    private fun updateAdaptiveSpread(nowMs: Long) {
+    private fun updateAdaptiveSpread(nowMs: Long, advBpsRaw: Double) {
         val targetBps = config.adaptiveSpreadTargetBps ?: return
         if (nowMs - lastAdaptiveUpdateMs < config.adaptiveSpreadUpdateMs) return
         lastAdaptiveUpdateMs = nowMs
 
-        val advBpsRaw = adverseBpsProvider?.invoke(config.symbol) ?: 0.0
         val toxicityBps = max(0.0, advBpsRaw)
         val feeBps = config.makerFeePct * 10_000.0
         val requiredBps = (2.0 * feeBps) + targetBps + (2.0 * toxicityBps)
@@ -168,5 +176,48 @@ class AvellanedaMmIntentStrategy(
                     "feeBps=${"%.2f".format(feeBps)} advBps=${"%.2f".format(advBpsRaw)}"
             )
         }
+    }
+
+    private fun checkTurtleMode(nowMs: Long, advBpsRaw: Double): Boolean {
+        if (config.toxicitySpikeAdvBps == null || config.toxicitySpikeAdvBps <= 0.0) return false
+        if (turtleUntilMs > nowMs) {
+            Telemetry.emit(
+                type = "turtle_mode",
+                tsMs = nowMs,
+                data = mapOf(
+                    "strategy_id" to id,
+                    "symbol" to config.symbol,
+                    "reason" to "active",
+                    "until_ms" to turtleUntilMs
+                )
+            )
+            return true
+        }
+        val threshold = config.toxicitySpikeAdvBps
+        val spike = advBpsRaw >= threshold && lastAdvBps < threshold
+        lastAdvBps = advBpsRaw
+        if (!spike) return false
+
+        turtleStrikes.addLast(nowMs)
+        val windowStart = nowMs - config.turtleStrikeWindowMs
+        while (turtleStrikes.isNotEmpty() && turtleStrikes.first() < windowStart) {
+            turtleStrikes.removeFirst()
+        }
+        if (turtleStrikes.size >= config.turtleStrikeThreshold) {
+            turtleUntilMs = nowMs + config.turtlePauseMs
+            turtleStrikes.clear()
+            Telemetry.emit(
+                type = "turtle_mode",
+                tsMs = nowMs,
+                data = mapOf(
+                    "strategy_id" to id,
+                    "symbol" to config.symbol,
+                    "reason" to "toxicity_spike",
+                    "pause_ms" to config.turtlePauseMs
+                )
+            )
+            return true
+        }
+        return false
     }
 }
