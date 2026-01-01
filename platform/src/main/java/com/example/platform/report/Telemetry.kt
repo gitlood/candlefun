@@ -324,7 +324,7 @@ object TelemetrySinks {
 
     private fun resolveLatestTypes(): Set<String> {
         val raw = System.getenv("TELEMETRY_LATEST_TYPES")
-            ?: "kpi_snapshot,health_summary,config_snapshot,strategy_signal,strategy_intent,kill_switch,turtle_mode,execution_decision,risk_cap"
+            ?: "kpi_snapshot,health_summary,config_snapshot,strategy_signal,strategy_intent,kill_switch,turtle_mode,execution_decision,risk_cap,strategy_synergy"
         return raw.split(',')
             .map { it.trim() }
             .filter { it.isNotBlank() }

@@ -48,6 +48,7 @@ object Superbot {
     private val statsLock = Any()
     private val strategyStats = ConcurrentHashMap<String, StrategyStat>()
     private val symbolStats = ConcurrentHashMap<String, SymbolStat>()
+    private val strategyDna = ConcurrentHashMap<String, MutableList<Map<String, Any?>>>()
 
     @JvmStatic
     fun main(args: Array<String>) = runBlocking {
@@ -223,23 +224,77 @@ object Superbot {
         if (mmEnabled) {
             for (symbol in symbols) {
                 val config = mmConfig(symbol)
+                recordStrategyDna(
+                    "avellaneda_mm",
+                    mapOf(
+                        "strategy_id" to "avellaneda_mm",
+                        "symbol" to config.symbol,
+                        "order_qty" to config.orderQty,
+                        "inventory_risk" to config.maxInventory,
+                        "min_spread_pct" to config.minSpreadPct,
+                        "max_spread_pct" to config.maxSpreadPct,
+                        "quote_refresh_ms" to config.quoteRefreshMs,
+                        "max_quote_age_ms" to config.maxQuoteAgeMs
+                    )
+                )
                 strategies.add(wrapIfLogging(AvellanedaMmIntentStrategy(config = config), logIntents))
             }
         }
         if (ofiEnabled) {
             for (symbol in symbols) {
                 val config = ofiConfig(symbol)
+                recordStrategyDna(
+                    "ofi_kukanov",
+                    mapOf(
+                        "strategy_id" to "ofi_kukanov",
+                        "symbol" to config.symbol,
+                        "order_qty" to config.orderQty,
+                        "entry_threshold" to config.entryThreshold,
+                        "exit_threshold" to config.exitThreshold,
+                        "max_hold_ms" to config.maxHoldMs,
+                        "entry_edge_multiplier" to config.entryEdgeMultiplier,
+                        "take_min_edge_bps" to config.takeMinEdgeBps,
+                        "avg_slippage_bps" to null
+                    )
+                )
                 strategies.add(wrapIfLogging(OfiKukanovIntentStrategy(config = config), logIntents))
             }
         }
         if (vacuumEnabled) {
             for (symbol in symbols) {
                 val config = vacuumConfig(symbol)
+                recordStrategyDna(
+                    "vacuum",
+                    mapOf(
+                        "strategy_id" to "vacuum",
+                        "symbol" to config.symbol,
+                        "order_qty" to config.orderQty,
+                        "depth_drop_pct" to config.depthDropPct,
+                        "spread_widen_pct" to config.spreadWidenPct,
+                        "order_ttl_ms" to config.orderTtlMs,
+                        "max_hold_ms" to config.maxHoldMs,
+                        "avg_slippage_bps" to null
+                    )
+                )
                 strategies.add(wrapIfLogging(VacuumIntentStrategy(config = config), logIntents))
             }
         }
         val pairs = pairsConfig(symbols)
         if (pairs != null) {
+            recordStrategyDna(
+                "pairs",
+                mapOf(
+                    "strategy_id" to "pairs",
+                    "symbol_a" to pairs.symbolA,
+                    "symbol_b" to pairs.symbolB,
+                    "entry_z" to pairs.entryZ,
+                    "exit_z" to pairs.exitZ,
+                    "min_corr" to pairs.minCorr,
+                    "max_vol" to pairs.maxVol,
+                    "notional" to pairs.notional,
+                    "order_ttl_ms" to pairs.orderTtlMs
+                )
+            )
             strategies.add(wrapIfLogging(PairsIntentStrategy(config = pairs), logIntents))
         }
         return strategies
@@ -251,6 +306,21 @@ object Superbot {
         val file = File(path)
         println("Survivor tail enabled: ${file.absolutePath}")
         val config = survivorConfig()
+        recordStrategyDna(
+            "survivor",
+            mapOf(
+                "strategy_id" to "survivor",
+                "symbol" to config.symbol,
+                "order_qty" to config.orderQty,
+                "funding_threshold" to config.entryFundingThreshold,
+                "exit_funding_threshold" to config.exitFundingThreshold,
+                "basis_stop_pct" to config.basisStopAbsPct,
+                "max_volatility" to config.maxVolatility,
+                "max_spread_pct" to config.maxSpreadPct,
+                "max_hold_ms" to config.maxHoldMs,
+                "net_carry" to null
+            )
+        )
         val strategy = SurvivorIntentStrategy(config)
         val tailer = SurvivorCsvTailer(file, pollMs = pollMs)
         CoroutineScope(Dispatchers.IO).launch {
@@ -484,9 +554,10 @@ object Superbot {
         val now = System.currentTimeMillis()
         val elapsedSec = ((now - startMs).coerceAtLeast(1L)) / 1000.0
         synchronized(statsLock) {
-            val strategies = strategyStats.mapValues { (_, stat) ->
+            val strategies = strategyStats.mapValues { (strategyId, stat) ->
                 val avgConf = if (stat.intentCount > 0) stat.totalConfidence / stat.intentCount else 0.0
                 val avgDelta = if (stat.intentCount > 0) stat.totalAbsDelta / stat.intentCount else 0.0
+                val dna = strategyDna[strategyId].orEmpty()
                 mapOf(
                     "intents" to stat.intentCount,
                     "avg_conf" to avgConf,
@@ -494,7 +565,8 @@ object Superbot {
                     "intents_per_min" to (stat.intentCount / (elapsedSec / 60.0)),
                     "last_symbol" to stat.lastSymbol,
                     "last_reason" to stat.lastReason,
-                    "last_ts_ms" to stat.lastIntentMs
+                    "last_ts_ms" to stat.lastIntentMs,
+                    "dna" to dna
                 )
             }
             val symbols = symbolStats.mapValues { (_, stat) ->
@@ -512,9 +584,15 @@ object Superbot {
                 "elapsed_sec" to elapsedSec,
                 "ticks" to ticks,
                 "strategies" to strategies,
-                "symbols" to symbols
+                "symbols" to symbols,
+                "strategy_dna" to strategyDna
             )
         }
+    }
+
+    private fun recordStrategyDna(strategyId: String, payload: Map<String, Any?>) {
+        val list = strategyDna.getOrPut(strategyId) { mutableListOf() }
+        list.add(payload)
     }
 
     private fun ema(prev: Double, value: Double, alpha: Double): Double {
@@ -530,6 +608,7 @@ object Superbot {
         var lastSymbol: String? = null
         var lastReason: String? = null
         var lastIntentMs: Long? = null
+
     }
 
     private class SymbolStat {

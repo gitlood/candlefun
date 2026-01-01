@@ -106,6 +106,19 @@ class PortfolioEngine(
         val vacuumEntries = intents.filter { it.strategyId == "vacuum" && it.reason == "vacuum_entry" }
         for (intent in vacuumEntries) {
             mmPausedUntilBySymbol[intent.symbol.value] = nowMs + vacuumMmPauseMs
+            Telemetry.emit(
+                type = "strategy_synergy",
+                tsMs = nowMs,
+                data = mapOf(
+                    "strategy_id" to "avellaneda_mm",
+                    "symbol" to intent.symbol.value,
+                    "action" to "pause",
+                    "reason" to "vacuum_entry",
+                    "pause_ms" to vacuumMmPauseMs,
+                    "pause_until_ms" to (nowMs + vacuumMmPauseMs),
+                    "trigger_strategy_id" to intent.strategyId
+                )
+            )
         }
         val ofiStrongSymbols = intents.filter { it.strategyId == "ofi_kukanov" && it.confidence >= ofiDefenseThreshold }
             .map { it.symbol }
@@ -119,11 +132,50 @@ class PortfolioEngine(
             }
             val pauseUntil = mmPausedUntilBySymbol[intent.symbol.value] ?: 0L
             if (pauseUntil > nowMs) {
+                Telemetry.emit(
+                    type = "strategy_synergy",
+                    tsMs = nowMs,
+                    data = mapOf(
+                        "strategy_id" to intent.strategyId,
+                        "symbol" to intent.symbol.value,
+                        "action" to "drop",
+                        "reason" to "vacuum_pause",
+                        "pause_until_ms" to pauseUntil,
+                        "desired_delta" to intent.desiredDelta.value.toDouble()
+                    )
+                )
                 continue
             }
             if (intent.symbol in ofiStrongSymbols) {
                 val scaled = scaleQty(intent.desiredDelta, ofiDefenseScale)
-                if (scaled.value.signum() == 0) continue
+                if (scaled.value.signum() == 0) {
+                    Telemetry.emit(
+                        type = "strategy_synergy",
+                        tsMs = nowMs,
+                        data = mapOf(
+                            "strategy_id" to intent.strategyId,
+                            "symbol" to intent.symbol.value,
+                            "action" to "drop",
+                            "reason" to "ofi_defense",
+                            "scale" to ofiDefenseScale,
+                            "desired_delta" to intent.desiredDelta.value.toDouble()
+                        )
+                    )
+                    continue
+                }
+                Telemetry.emit(
+                    type = "strategy_synergy",
+                    tsMs = nowMs,
+                    data = mapOf(
+                        "strategy_id" to intent.strategyId,
+                        "symbol" to intent.symbol.value,
+                        "action" to "scale",
+                        "reason" to "ofi_defense",
+                        "scale" to ofiDefenseScale,
+                        "desired_delta" to intent.desiredDelta.value.toDouble(),
+                        "final_delta" to scaled.value.toDouble()
+                    )
+                )
                 adjusted.add(
                     intent.copy(
                         desiredDelta = scaled,
@@ -183,6 +235,17 @@ class PortfolioEngine(
                     capReasons = capReasons,
                     dropped = true
                 )
+                emitRiskCap(
+                    nowMs = nowMs,
+                    decision = decision,
+                    scale = 0.0,
+                    finalDelta = null,
+                    capReasons = capReasons,
+                    dropped = true,
+                    totalExposure = totalExposure,
+                    symbolExposure = symbolExposureUsd(decision.symbol),
+                    deltaNotional = deltaNotional
+                )
                 return null
             }
             scale = minOf(scale, remaining / deltaNotional)
@@ -205,6 +268,17 @@ class PortfolioEngine(
                     capReasons = capReasons,
                     dropped = true
                 )
+                emitRiskCap(
+                    nowMs = nowMs,
+                    decision = decision,
+                    scale = 0.0,
+                    finalDelta = null,
+                    capReasons = capReasons,
+                    dropped = true,
+                    totalExposure = totalExposure,
+                    symbolExposure = symbolExposure,
+                    deltaNotional = deltaNotional
+                )
                 return null
             }
             scale = minOf(scale, remaining / deltaNotional)
@@ -224,6 +298,17 @@ class PortfolioEngine(
             finalDelta = scaledDelta,
             capReasons = capReasons,
             dropped = false
+        )
+        emitRiskCap(
+            nowMs = nowMs,
+            decision = decision,
+            scale = scale,
+            finalDelta = scaledDelta,
+            capReasons = capReasons,
+            dropped = false,
+            totalExposure = totalExposure,
+            symbolExposure = symbolExposure,
+            deltaNotional = deltaNotional
         )
         return updated
     }
@@ -338,6 +423,34 @@ class PortfolioEngine(
                 "total_exposure_usd" to totalExposure,
                 "symbol_exposure_usd" to symbolExposure,
                 "allocations" to allocations
+            )
+        )
+    }
+
+    private fun emitRiskCap(
+        nowMs: Long,
+        decision: com.example.execution.domain.RoutingDecision,
+        scale: Double,
+        finalDelta: Qty?,
+        capReasons: List<String>,
+        dropped: Boolean,
+        totalExposure: Double,
+        symbolExposure: Double,
+        deltaNotional: Double
+    ) {
+        Telemetry.emit(
+            type = "risk_cap",
+            tsMs = nowMs,
+            data = mapOf(
+                "symbol" to decision.symbol.value,
+                "original_net_delta" to decision.netDelta.value.toDouble(),
+                "final_net_delta" to finalDelta?.value?.toDouble(),
+                "scale" to scale,
+                "dropped" to dropped,
+                "cap_reasons" to capReasons,
+                "total_exposure_usd" to totalExposure,
+                "symbol_exposure_usd" to symbolExposure,
+                "delta_notional_usd" to deltaNotional
             )
         )
     }
