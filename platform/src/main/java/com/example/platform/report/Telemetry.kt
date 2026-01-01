@@ -112,8 +112,9 @@ class LatestTelemetrySink(
 
     private fun buildKey(event: TelemetryEvent): String {
         val symbol = event.data["symbol"]?.toString()?.trim().orEmpty()
-        if (symbol.isNotEmpty()) return "${event.type}::$symbol"
         val strategy = event.data["strategy_id"]?.toString()?.trim().orEmpty()
+        if (strategy.isNotEmpty() && symbol.isNotEmpty()) return "${event.type}::$strategy::$symbol"
+        if (symbol.isNotEmpty()) return "${event.type}::$symbol"
         if (strategy.isNotEmpty()) return "${event.type}::$strategy"
         return event.type
     }
@@ -323,7 +324,7 @@ object TelemetrySinks {
 
     private fun resolveLatestTypes(): Set<String> {
         val raw = System.getenv("TELEMETRY_LATEST_TYPES")
-            ?: "kpi_snapshot,health_summary,config_snapshot,strategy_signal"
+            ?: "kpi_snapshot,health_summary,config_snapshot,strategy_signal,strategy_intent,kill_switch,turtle_mode,execution_decision,risk_cap"
         return raw.split(',')
             .map { it.trim() }
             .filter { it.isNotBlank() }

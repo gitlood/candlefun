@@ -4,6 +4,7 @@ import com.example.account.domain.Qty
 import com.example.account.domain.Symbol
 import com.example.execution.domain.ExecutionGateway
 import com.example.execution.domain.IntentStrategy
+import com.example.execution.domain.NettingSummary
 import com.example.execution.domain.StrategyContext
 import com.example.execution.domain.StrategyRegimeState
 import com.example.execution.domain.StrategyIntent
@@ -91,9 +92,11 @@ class PortfolioEngine(
         if (intents.isEmpty()) return
         val (summaries, decisions) = allocator.allocate(intents, regimes, strategyBudgets)
         if (decisions.isEmpty()) return
+        val summariesBySymbol = summaries.associateBy { it.symbol }
         for (decision in decisions) {
             val symbolState = latestStates[decision.symbol.value] ?: continue
-            val scaled = applyRiskCaps(decision, symbolState) ?: continue
+            val summary = summariesBySymbol[decision.symbol]
+            val scaled = applyRiskCaps(decision, summary, symbolState, nowMs) ?: continue
             policy.route(scaled, symbolState, nowMs)
         }
     }
@@ -148,8 +151,12 @@ class PortfolioEngine(
         lastPositionRefreshMs = nowMs
     }
 
-    private fun applyRiskCaps(decision: com.example.execution.domain.RoutingDecision, state: MarketState)
-        : com.example.execution.domain.RoutingDecision? {
+    private fun applyRiskCaps(
+        decision: com.example.execution.domain.RoutingDecision,
+        summary: NettingSummary?,
+        state: MarketState,
+        nowMs: Long
+    ): com.example.execution.domain.RoutingDecision? {
         val mid = state.midPrice ?: state.microPrice ?: return decision
         if (mid <= 0.0) return decision
         val absDelta = decision.netDelta.value.abs().toDouble()
@@ -157,21 +164,68 @@ class PortfolioEngine(
         if (deltaNotional <= 0.0) return null
 
         var scale = 1.0
+        val capReasons = mutableListOf<String>()
         val totalExposure = totalExposureUsd()
         if (maxTotalNotionalUsd > 0.0 && totalExposure + deltaNotional > maxTotalNotionalUsd) {
             val remaining = maxTotalNotionalUsd - totalExposure
-            if (remaining <= 0.0) return null
+            capReasons.add("total_notional")
+            if (remaining <= 0.0) {
+                emitExecutionDecision(
+                    nowMs = nowMs,
+                    decision = decision,
+                    summary = summary,
+                    mid = mid,
+                    deltaNotional = deltaNotional,
+                    totalExposure = totalExposure,
+                    symbolExposure = symbolExposureUsd(decision.symbol),
+                    scale = 0.0,
+                    finalDelta = null,
+                    capReasons = capReasons,
+                    dropped = true
+                )
+                return null
+            }
             scale = minOf(scale, remaining / deltaNotional)
         }
         val symbolExposure = symbolExposureUsd(decision.symbol)
         if (maxSymbolNotionalUsd > 0.0 && symbolExposure + deltaNotional > maxSymbolNotionalUsd) {
             val remaining = maxSymbolNotionalUsd - symbolExposure
-            if (remaining <= 0.0) return null
+            capReasons.add("symbol_notional")
+            if (remaining <= 0.0) {
+                emitExecutionDecision(
+                    nowMs = nowMs,
+                    decision = decision,
+                    summary = summary,
+                    mid = mid,
+                    deltaNotional = deltaNotional,
+                    totalExposure = totalExposure,
+                    symbolExposure = symbolExposure,
+                    scale = 0.0,
+                    finalDelta = null,
+                    capReasons = capReasons,
+                    dropped = true
+                )
+                return null
+            }
             scale = minOf(scale, remaining / deltaNotional)
         }
         if (scale >= 0.999) return decision
         val scaledDelta = Qty(decision.netDelta.value.multiply(java.math.BigDecimal.valueOf(scale)))
-        return decision.copy(netDelta = scaledDelta)
+        val updated = decision.copy(netDelta = scaledDelta)
+        emitExecutionDecision(
+            nowMs = nowMs,
+            decision = decision,
+            summary = summary,
+            mid = mid,
+            deltaNotional = deltaNotional,
+            totalExposure = totalExposure,
+            symbolExposure = symbolExposure,
+            scale = scale,
+            finalDelta = scaledDelta,
+            capReasons = capReasons,
+            dropped = false
+        )
+        return updated
     }
 
     private fun isKillSwitchActive(nowMs: Long): Boolean {
@@ -234,6 +288,58 @@ class PortfolioEngine(
         val state = latestStates[symbol.value] ?: return 0.0
         val mid = state.midPrice ?: state.microPrice ?: return 0.0
         return kotlin.math.abs(qty) * mid
+    }
+
+    private fun emitExecutionDecision(
+        nowMs: Long,
+        decision: com.example.execution.domain.RoutingDecision,
+        summary: NettingSummary?,
+        mid: Double,
+        deltaNotional: Double,
+        totalExposure: Double,
+        symbolExposure: Double,
+        scale: Double,
+        finalDelta: Qty?,
+        capReasons: List<String>,
+        dropped: Boolean
+    ) {
+        if (!dropped && scale >= 0.999) return
+        val allocations = summary?.allocations?.map { alloc ->
+            val intent = alloc.intent
+            mapOf(
+                "strategy_id" to intent.strategyId,
+                "symbol" to intent.symbol.value,
+                "desired_delta" to intent.desiredDelta.value.toDouble(),
+                "urgency" to intent.urgency.name,
+                "prefer_maker" to intent.preferMaker,
+                "ttl_ms" to intent.ttlMs,
+                "confidence" to intent.confidence,
+                "reason" to intent.reason,
+                "accepted_delta" to alloc.acceptedDelta.value.toDouble(),
+                "applied_scale" to alloc.appliedScale,
+                "confidence_scale" to alloc.confidenceScale,
+                "budget_scale" to alloc.budgetScale,
+                "rejection_reason" to alloc.rejectionReason
+            )
+        }.orEmpty()
+
+        Telemetry.emit(
+            type = "execution_decision",
+            tsMs = nowMs,
+            data = mapOf(
+                "symbol" to decision.symbol.value,
+                "original_net_delta" to decision.netDelta.value.toDouble(),
+                "final_net_delta" to finalDelta?.value?.toDouble(),
+                "scale" to scale,
+                "dropped" to dropped,
+                "cap_reasons" to capReasons,
+                "mid_price" to mid,
+                "delta_notional_usd" to deltaNotional,
+                "total_exposure_usd" to totalExposure,
+                "symbol_exposure_usd" to symbolExposure,
+                "allocations" to allocations
+            )
+        )
     }
 
     private companion object {
