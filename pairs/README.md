@@ -8,6 +8,20 @@ Pairs mean reversion using rolling beta, spread z-score, and regime filters.
 ./gradlew :pairs:runBacktest
 ```
 
+## Per-leg sizing overrides (optional)
+
+```
+PRICE_TICK_A=0.1 \
+PRICE_TICK_B=0.01 \
+QTY_STEP_A=0.0001 \
+QTY_STEP_B=0.001 \
+MIN_QTY_A=0.001 \
+MIN_QTY_B=0.01 \
+MIN_NOTIONAL_A=5 \
+MIN_NOTIONAL_B=5 \
+./gradlew :pairs:runBacktest
+```
+
 ## Live paper
 
 ```
@@ -28,6 +42,10 @@ Pairs mean reversion using rolling beta, spread z-score, and regime filters.
 - `ENTRY_Z`, `EXIT_Z`, `MAX_HOLD_MS`
 - `MIN_CORR`, `MAX_VOL`, `TREND_COUNT_LIMIT`
 - `NOTIONAL`, `PRICE_TICK`, `QTY_STEP`
+- `PRICE_TICK_A`, `PRICE_TICK_B`
+- `QTY_STEP_A`, `QTY_STEP_B`
+- `MIN_QTY_A`, `MIN_QTY_B`
+- `MIN_NOTIONAL_A`, `MIN_NOTIONAL_B`
 - `ORDER_TTL_MS`
 - `MAKER_FEE_PCT`, `TAKER_FEE_PCT`
 - `TAIL_Z`, `LOG_KPI_EVERY_MS`, `LOG_SIGNALS`

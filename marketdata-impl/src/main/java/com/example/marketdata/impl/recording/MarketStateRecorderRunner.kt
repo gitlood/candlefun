@@ -36,6 +36,18 @@ object MarketStateRecorderRunner {
                 return@runBlocking
             }
         }
+        if (!outputFile.exists()) {
+            try {
+                if (!outputFile.createNewFile()) {
+                    println("Failed to create output file: ${outputFile.absolutePath}")
+                    return@runBlocking
+                }
+            } catch (e: Exception) {
+                println("Failed to create output file: ${outputFile.absolutePath}")
+                println("Reason: ${e.message}")
+                return@runBlocking
+            }
+        }
         val source = (System.getenv("MARKETDATA_SOURCE") ?: "SPOT").uppercase()
         val symbolsEnv = System.getenv("SYMBOLS")
         val topN = System.getenv("TOP_N")?.toIntOrNull() ?: 50
